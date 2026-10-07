@@ -9,7 +9,7 @@ comparison mainline revision is `ba9fc57bc88725d7602fd652e601384e9f2e3183`.
 The PR now points to a different history. This fork preserves the tested source
 from the pinned PR snapshot.
 
-The R9 additions cover:
+The additions cover:
 
 - Darwin style projection and custom-layer projection APIs.
 - Globe camera movement, bounds fitting, coordinate conversion, and feature queries.
@@ -43,7 +43,7 @@ sources, layers, and images.
 ## Build the iOS SDK
 
 Use macOS, Xcode, and Bazelisk. Bazelisk selects Bazel 8.8.0 from `.bazelversion`.
-The R9 builds used Xcode 27.1 (27A9269). The application integration targets iOS
+The builds used Xcode 27.1 (27A9269). The application integration targets iOS
 18 and later; the upstream XCFramework target retains its iOS 15.5 deployment
 setting. That setting is not an iOS 15.5 validation claim.
 
@@ -104,7 +104,7 @@ bazel --output_user_root="$PWD/.build/bazel-user-root" test \
 The render runner compares existing expectations without rebaselining them.
 `MLN_RENDER_TEST_FILTER` selects a subset when investigating a rendering issue.
 
-## R9 validation record
+## Validation record
 
 The local acceptance run completed on 2026-10-05. Publishing this source does not
 constitute a new CI or device test run.
@@ -119,7 +119,7 @@ constitute a new CI or device test run.
 - The same iPhone 12 Pro running iOS 26.7.1 was used for the mainline comparison.
   Seven common application scenarios produced 42 retained measurement windows;
   all 126 recorded hitch values were zero. The tested interactions left no
-  confirmed R9 fluency regression relative to the pinned mainline.
+  confirmed fluency regression relative to the pinned mainline.
 
 Resource costs are not at parity. Two street-level scenarios used median CPU
 times about 0.182 s and 0.117 s above mainline. Style changes, sharing, and
