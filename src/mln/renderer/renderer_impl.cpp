@@ -25,6 +25,7 @@
 #include <mln/renderer/render_target.hpp>
 
 #if MLN_RENDER_BACKEND_METAL
+#include <mln/mtl/context.hpp>
 #include <mln/mtl/renderer_backend.hpp>
 #include <Metal/MTLCaptureManager.hpp>
 #include <Metal/MTLCaptureScope.hpp>
@@ -61,6 +62,9 @@ Renderer::Impl::Impl(gfx::RendererBackend& backend_,
 
 Renderer::Impl::~Impl() {
     assert(gfx::BackendScope::exists());
+    if (observedContext) {
+        observedContext->clearObserver(this);
+    }
 };
 
 void Renderer::Impl::onPreCompileShader(shaders::BuiltIn shaderID,
@@ -85,6 +89,10 @@ void Renderer::Impl::onRenderError(std::exception_ptr error) {
     observer->onRenderError(error);
 }
 
+void Renderer::Impl::onInvalidate() {
+    observer->onInvalidate();
+}
+
 void Renderer::Impl::setObserver(RendererObserver* observer_) {
     observer = observer_ ? observer_ : &nullObserver();
 }
@@ -93,6 +101,7 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
     MLN_TRACE_FUNC();
     auto& context = backend.getContext();
     context.setObserver(this);
+    observedContext = &context;
 
     assert(updateParameters);
 
@@ -504,13 +513,18 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
     // Add the feature info from the render orchestrator
     stats->frameRenderedFeatures = std::move(orchestrator.moveFrameRenderedFeatures());
 
+    bool fullyRendered = renderTreeParameters.loaded;
+#if MLN_RENDER_BACKEND_METAL
+    const auto& metalContext = static_cast<const mtl::Context&>(context);
+    fullyRendered = fullyRendered && !metalContext.isRenderingDeferred() && !metalContext.hasRenderingFailed();
+#endif
     observer->onDidFinishRenderingFrame(
-        renderTreeParameters.loaded ? RendererObserver::RenderMode::Full : RendererObserver::RenderMode::Partial,
+        fullyRendered ? RendererObserver::RenderMode::Full : RendererObserver::RenderMode::Partial,
         renderTreeParameters.needsRepaint,
         renderTreeParameters.placementChanged,
         std::move(stats));
 
-    if (!renderTreeParameters.loaded) {
+    if (!fullyRendered) {
         renderState = RenderState::Partial;
     } else if (renderState != RenderState::Fully) {
         renderState = RenderState::Fully;

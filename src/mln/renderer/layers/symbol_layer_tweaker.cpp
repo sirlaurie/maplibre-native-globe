@@ -60,6 +60,11 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
 
     auto& context = parameters.context;
     const auto& state = parameters.state;
+#if MLN_RENDER_BACKEND_METAL
+    const bool usesProjectionUBO = state.isGlobeRendering();
+#else
+    constexpr bool usesProjectionUBO = true;
+#endif
     const auto& symbolLayerProperties = static_cast<const SymbolLayerProperties&>(*evaluatedProperties);
     const auto& evaluated = symbolLayerProperties.evaluated;
 
@@ -94,7 +99,7 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
     int i = 0;
     std::vector<SymbolDrawableUBO> drawableUBOVector(layerGroup.getDrawableCount());
     std::vector<SymbolTilePropsUBO> tilePropsUBOVector(layerGroup.getDrawableCount());
-    std::vector<ProjectionUBO> projectionUBOVector(layerGroup.getDrawableCount());
+    std::vector<ProjectionUBO> projectionUBOVector(usesProjectionUBO ? layerGroup.getDrawableCount() : 0);
 #endif
 
     const auto camDist = state.getCameraToCenterDistance();
@@ -151,10 +156,16 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
         projection.translate = {};
         const auto& matrix = projection.fallbackMatrix;
 #if MLN_UBO_CONSOLIDATION
-        projectionUBOVector[i] = toProjectionUBO(projection);
+        if (usesProjectionUBO) {
+            projectionUBOVector[i] = toProjectionUBO(projection);
+        }
 #else
-        const auto projectionUBO = toProjectionUBO(projection);
-        drawable.mutableUniformBuffers().createOrUpdate(idProjectionUBO, &projectionUBO, context);
+        if (usesProjectionUBO) {
+            const auto projectionUBO = toProjectionUBO(projection);
+            drawable.mutableUniformBuffers().createOrUpdate(idProjectionUBO, &projectionUBO, context);
+        } else {
+            drawable.mutableUniformBuffers().set(idProjectionUBO, nullptr);
+        }
 #endif
 
         // from symbol_program, makeValues
@@ -166,10 +177,19 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
                                symbolData.rotationAlignment == AlignmentType::Map;
         const bool hasVariablePlacement = symbolData.bucketVariablePlacement &&
                                           (isText || symbolData.textFit != IconTextFitType::None);
-        const mat4 labelPlaneMatrix = (alongLine || hasVariablePlacement)
-                                          ? matrix::identity4()
-                                          : getLabelPlaneMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
-        const mat4 glCoordMatrix = getGlCoordMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
+        mat4 labelPlaneMatrix = (alongLine || hasVariablePlacement)
+                                    ? matrix::identity4()
+                                    : getLabelPlaneMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
+        mat4 glCoordMatrix = getGlCoordMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
+#if MLN_RENDER_BACKEND_METAL
+        if (!state.isGlobeRendering()) {
+            if (pitchWithMap) {
+                matrix::multiply(glCoordMatrix, matrix, glCoordMatrix);
+            } else if (!alongLine && !hasVariablePlacement) {
+                matrix::multiply(labelPlaneMatrix, labelPlaneMatrix, matrix);
+            }
+        }
+#endif
 
         const float gammaScale = (symbolData.pitchAlignment == AlignmentType::Map
                                       ? static_cast<float>(std::cos(state.getPitch())) * camDist
@@ -258,7 +278,12 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
 
     layerUniforms.set(idSymbolDrawableUBO, drawableUniformBuffer);
     layerUniforms.set(idSymbolTilePropsUBO, tilePropsUniformBuffer);
-    uploadProjectionUBOs(layerUniforms, projectionUBOVector, context);
+    if (usesProjectionUBO) {
+        uploadProjectionUBOs(layerUniforms, projectionUBOVector, context);
+    } else {
+        layerUniforms.set(idProjectionUBO, nullptr);
+        projectionUniformBuffer.reset();
+    }
 #endif
 }
 

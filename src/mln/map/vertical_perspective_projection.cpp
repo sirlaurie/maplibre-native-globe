@@ -8,9 +8,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <optional>
 #include <tuple>
+#include <vector>
 
 namespace mln {
 
@@ -119,6 +121,194 @@ double integrateSecant(double x) {
 
 int sign(double value) {
     return (value > 0) - (value < 0);
+}
+
+bool isClipped(const vec4& position) {
+    return position[3] <= 0.0 || position[2] > position[3] || position[2] < 0.0;
+}
+
+vec4 projectLocation(const ProjectionData& data, const LatLng& coordinate) {
+    const auto point = Projection::project(coordinate, util::EXTENT / util::tileSize_D);
+    return VerticalPerspectiveProjection::projectSphere(
+        data, point, VerticalPerspectiveProjection::surfaceVector(coordinate));
+}
+
+std::optional<LatLng> mercatorLocationAtPoint(const TransformState& state, const ScreenCoordinate& point) {
+    const auto size = state.getSize();
+    const double x = point.x / size.width * 2.0 - 1.0;
+    const double y = point.y / size.height * 2.0 - 1.0;
+    vec4 near = {{x, y, -1.0, 1.0}};
+    vec4 far = {{x, y, 1.0, 1.0}};
+    matrix::transformMat4(near, near, state.getInvProjectionMatrix());
+    matrix::transformMat4(far, far, state.getInvProjectionMatrix());
+    if (near[3] == 0.0 || far[3] == 0.0) {
+        return std::nullopt;
+    }
+    for (std::size_t index = 0; index < 3; ++index) {
+        near[index] /= near[3];
+        far[index] /= far[3];
+    }
+    const double distance = far[2] - near[2];
+    if (distance == 0.0) {
+        return std::nullopt;
+    }
+    const double fraction = -near[2] / distance;
+    const Point<double> world{std::lerp(near[0], far[0], fraction), std::lerp(near[1], far[1], fraction)};
+    if (!std::isfinite(world.x) || !std::isfinite(world.y)) {
+        return std::nullopt;
+    }
+    return Projection::unproject(world, state.getScale());
+}
+
+std::optional<vec3> sphereIntersectionAtPoint(const TransformState& state, const ScreenCoordinate& point) {
+    const vec3 origin = state.getGlobeCameraPosition();
+    const vec3 direction = rayDirectionFromPixel(state, point, state.getInverseGlobeViewProjectionMatrix());
+    if (const auto intersection = raySphereIntersection(origin, direction)) {
+        const double distance = intersection->tMin >= 0.0 ? intersection->tMin : intersection->tMax;
+        if (distance >= 0.0) {
+            return normalized(add(origin, scaled(direction, distance)));
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<LatLng> solveLocation(const ProjectionData& data,
+                                    const Point<double>& target,
+                                    const LatLng& initial,
+                                    double centerLongitude,
+                                    const Size& viewport) {
+    constexpr double maximumPixelError = 1e-6;
+    constexpr double halfPi = std::numbers::pi * 0.5;
+    const double west = centerLongitude - 180.0;
+    const double east = centerLongitude + 180.0;
+    const double minimumLongitude = util::deg2rad(west);
+    const double maximumLongitude = util::deg2rad(east);
+    const float transition = static_cast<float>(data.projectionTransition);
+    double longitude = std::clamp(util::deg2rad(initial.longitude()), minimumLongitude, maximumLongitude);
+    double latitude = std::clamp(util::deg2rad(initial.latitude()), -halfPi, halfPi);
+
+    for (std::size_t iteration = 0; iteration < 32; ++iteration) {
+        const LatLng coordinate{util::rad2deg(latitude), std::clamp(util::rad2deg(longitude), west, east)};
+        const vec4 position = projectLocation(data, coordinate);
+        if (position[3] <= 0.0) {
+            return std::nullopt;
+        }
+        const Point<double> error{position[0] / position[3] - target.x, position[1] / position[3] - target.y};
+        const double errorLength = std::hypot(error.x, error.y);
+        if (std::hypot(error.x * viewport.width * 0.5, error.y * viewport.height * 0.5) <= maximumPixelError) {
+            return isClipped(position) ? std::nullopt : std::make_optional(coordinate);
+        }
+
+        const double sinLatitude = std::sin(latitude);
+        const double cosLatitude = std::cos(latitude);
+        const double sinLongitude = std::sin(longitude);
+        const double cosLongitude = std::cos(longitude);
+        vec4 longitudeDerivative = {{cosLatitude * cosLongitude, 0.0, -cosLatitude * sinLongitude, 0.0}};
+        vec4 latitudeDerivative = {{-sinLatitude * sinLongitude, cosLatitude, -sinLatitude * cosLongitude, 0.0}};
+        matrix::transformMat4(longitudeDerivative, longitudeDerivative, data.mainMatrix);
+        matrix::transformMat4(latitudeDerivative, latitudeDerivative, data.mainMatrix);
+
+        const double tileUnitsPerRadian = util::EXTENT / (2.0 * std::numbers::pi);
+        vec4 flatLongitudeDerivative = {{tileUnitsPerRadian, 0.0, 0.0, 0.0}};
+        vec4 flatLatitudeDerivative = {
+            {0.0,
+             std::abs(coordinate.latitude()) < util::LATITUDE_MAX ? -tileUnitsPerRadian / cosLatitude : 0.0,
+             0.0,
+             0.0}};
+        matrix::transformMat4(flatLongitudeDerivative, flatLongitudeDerivative, data.fallbackMatrix);
+        matrix::transformMat4(flatLatitudeDerivative, flatLatitudeDerivative, data.fallbackMatrix);
+        for (std::size_t index : {0u, 1u, 3u}) {
+            longitudeDerivative[index] = std::lerp(
+                flatLongitudeDerivative[index], longitudeDerivative[index], transition);
+            latitudeDerivative[index] = std::lerp(flatLatitudeDerivative[index], latitudeDerivative[index], transition);
+        }
+
+        const double reciprocalW = 1.0 / position[3];
+        const double a = (longitudeDerivative[0] - position[0] * reciprocalW * longitudeDerivative[3]) * reciprocalW;
+        const double b = (latitudeDerivative[0] - position[0] * reciprocalW * latitudeDerivative[3]) * reciprocalW;
+        const double c = (longitudeDerivative[1] - position[1] * reciprocalW * longitudeDerivative[3]) * reciprocalW;
+        const double d = (latitudeDerivative[1] - position[1] * reciprocalW * latitudeDerivative[3]) * reciprocalW;
+        const double determinant = a * d - b * c;
+        if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-20) {
+            return std::nullopt;
+        }
+        const double longitudeStep = (error.x * d - error.y * b) / determinant;
+        const double latitudeStep = (error.y * a - error.x * c) / determinant;
+        double amount = std::min(1.0, 0.5 / std::max(std::abs(longitudeStep), std::abs(latitudeStep)));
+        bool advanced = false;
+        for (std::size_t attempt = 0; attempt < 12; ++attempt) {
+            const double nextLongitude = std::clamp(
+                longitude - amount * longitudeStep, minimumLongitude, maximumLongitude);
+            const double nextLatitude = std::clamp(latitude - amount * latitudeStep, -halfPi, halfPi);
+            const vec4 next = projectLocation(data, {util::rad2deg(nextLatitude), util::rad2deg(nextLongitude)});
+            if (next[3] > 0.0 && std::hypot(next[0] / next[3] - target.x, next[1] / next[3] - target.y) < errorLength) {
+                longitude = nextLongitude;
+                latitude = nextLatitude;
+                advanced = true;
+                break;
+            }
+            amount *= 0.5;
+        }
+        if (!advanced) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<LatLng> blendedLocationAtPoint(const TransformState& state, const ScreenCoordinate& point) {
+    const ProjectionData data = state.getProjectionData(UnwrappedTileID(0, 0, 0));
+    const auto size = state.getSize();
+    const Point<double> target{point.x / size.width * 2.0 - 1.0, point.y / size.height * 2.0 - 1.0};
+    const LatLng center = state.getLatLng(LatLng::Unwrapped);
+    std::vector<LatLng> initial;
+    if (const auto flat = mercatorLocationAtPoint(state, point)) {
+        initial.push_back(*flat);
+    }
+    if (const auto sphere = sphereIntersectionAtPoint(state, point)) {
+        LatLng coordinate = VerticalPerspectiveProjection::surfaceVectorToLatLng(*sphere);
+        coordinate.unwrapForShortestPath(center);
+        initial.push_back(coordinate);
+    }
+    initial.push_back(center);
+
+    std::optional<LatLng> result;
+    double depth = std::numeric_limits<double>::infinity();
+    for (const auto& start : initial) {
+        if (const auto coordinate = solveLocation(data, target, start, center.longitude(), size)) {
+            const vec4 clip = projectLocation(data, *coordinate);
+            if (const double candidateDepth = clip[2] / clip[3]; candidateDepth < depth) {
+                result = coordinate;
+                depth = candidateDepth;
+            }
+        }
+    }
+    return result;
+}
+
+LatLng blendedLocationAtOrNearPoint(const TransformState& state, const ScreenCoordinate& point) {
+    if (const auto coordinate = blendedLocationAtPoint(state, point)) {
+        return *coordinate;
+    }
+    const LatLng center = state.getLatLng(LatLng::Unwrapped);
+    vec4 centerClip;
+    const ScreenCoordinate centerPoint = VerticalPerspectiveProjection::latLngToScreenCoordinate(
+        state, center, centerClip);
+    LatLng nearest = center;
+    double inside = 0.0;
+    double outside = 1.0;
+    for (std::size_t iteration = 0; iteration < 32; ++iteration) {
+        const double fraction = (inside + outside) * 0.5;
+        const ScreenCoordinate candidate{std::lerp(centerPoint.x, point.x, fraction),
+                                         std::lerp(centerPoint.y, point.y, fraction)};
+        if (const auto coordinate = blendedLocationAtPoint(state, candidate)) {
+            nearest = *coordinate;
+            inside = fraction;
+        } else {
+            outside = fraction;
+        }
+    }
+    return nearest;
 }
 
 } // namespace
@@ -237,12 +427,15 @@ LatLng VerticalPerspectiveProjection::surfaceVectorToLatLng(const vec3& surface)
 
 vec3 VerticalPerspectiveProjection::screenCoordinateToSurface(const TransformState& state,
                                                               const ScreenCoordinate& point) {
+    if (static_cast<float>(state.getProjectionTransition()) <= 0.999f) {
+        return surfaceVector(blendedLocationAtOrNearPoint(state, point));
+    }
+    if (const auto surface = sphereIntersectionAtPoint(state, point)) {
+        return *surface;
+    }
+
     const vec3 origin = state.getGlobeCameraPosition();
     const vec3 direction = rayDirectionFromPixel(state, point, state.getInverseGlobeViewProjectionMatrix());
-
-    if (const auto intersection = raySphereIntersection(origin, direction)) {
-        return normalized(add(origin, scaled(direction, intersection->tMin)));
-    }
 
     // The ray misses the globe: take the nearest point on the horizon, the circle where the clipping plane cuts the
     // sphere.
@@ -267,21 +460,37 @@ vec3 VerticalPerspectiveProjection::screenCoordinateToSurface(const TransformSta
     return add(horizonCenter, scaled(relative, horizonRadius / length(relative)));
 }
 
+std::optional<vec3> VerticalPerspectiveProjection::screenCoordinateToSurfaceIntersection(
+    const TransformState& state, const ScreenCoordinate& point) {
+    if (static_cast<float>(state.getProjectionTransition()) > 0.999f) {
+        return sphereIntersectionAtPoint(state, point);
+    }
+    if (const auto coordinate = blendedLocationAtPoint(state, point)) {
+        return surfaceVector(*coordinate);
+    }
+    return std::nullopt;
+}
+
 LatLng VerticalPerspectiveProjection::screenCoordinateToLatLng(const TransformState& state,
                                                                const ScreenCoordinate& point,
                                                                LatLng::WrapMode wrapMode) {
-    const LatLng latLng = surfaceVectorToLatLng(screenCoordinateToSurface(state, point));
+    LatLng latLng = static_cast<float>(state.getProjectionTransition()) <= 0.999f
+                        ? blendedLocationAtOrNearPoint(state, point)
+                        : surfaceVectorToLatLng(screenCoordinateToSurface(state, point));
+    latLng.unwrapForShortestPath(state.getLatLng(LatLng::Unwrapped));
     return wrapMode == LatLng::Wrapped ? latLng.wrapped() : latLng;
 }
 
 ScreenCoordinate VerticalPerspectiveProjection::latLngToScreenCoordinate(const TransformState& state,
                                                                          const LatLng& latLng,
                                                                          vec4& clip) {
-    const vec3 surface = surfaceVector(latLng);
-    const vec4 position = {{surface[0], surface[1], surface[2], 1.0}};
-    matrix::transformMat4(clip, position, state.getGlobeViewProjectionMatrix());
+    clip = projectLocation(state.getProjectionData(UnwrappedTileID(0, 0, 0)), latLng);
     const Size size = state.getSize();
     return {(clip[0] / clip[3] * 0.5 + 0.5) * size.width, (clip[1] / clip[3] * 0.5 + 0.5) * size.height};
+}
+
+bool VerticalPerspectiveProjection::isLocationOccluded(const TransformState& state, const LatLng& coordinate) {
+    return isClipped(projectLocation(state.getProjectionData(UnwrappedTileID(0, 0, 0)), coordinate));
 }
 
 std::optional<LatLng> VerticalPerspectiveProjection::centerForLocationAtPoint(const TransformState& state,
@@ -462,12 +671,44 @@ ProjectedTilePoint VerticalPerspectiveProjection::projectTilePoint(const Project
                                                                    const UnwrappedTileID& tileID,
                                                                    const Point<double>& point,
                                                                    const double elevation) const {
-    const vec3 sphere = scaled(tileCoordinatesToSphere(point, tileID), 1.0 + elevation / globeRadiusMeters);
-    vec4 pos = {{sphere[0], sphere[1], sphere[2], 1}};
-    matrix::transformMat4(pos, pos, data.mainMatrix);
-    const auto& plane = data.clippingPlane;
-    const double side = plane[0] * sphere[0] + plane[1] * sphere[1] + plane[2] * sphere[2] + plane[3];
-    return {.point = {pos[0] / pos[3], pos[1] / pos[3]}, .signedDistanceFromCamera = pos[3], .occluded = side < 0.0};
+    vec3 sphere = tileCoordinatesToSphere({point.x + data.translate[0], point.y + data.translate[1]}, tileID);
+    if (point.y < -32767.5) {
+        sphere = {{0.0, 1.0, 0.0}};
+    } else if (point.y > 32766.5) {
+        sphere = {{0.0, -1.0, 0.0}};
+    }
+
+    const vec4 pos = projectSphere(data, point, sphere, elevation);
+    return {
+        .point = {pos[0] / pos[3], pos[1] / pos[3]}, .signedDistanceFromCamera = pos[3], .occluded = isClipped(pos)};
+}
+
+vec4 VerticalPerspectiveProjection::projectSphere(const ProjectionData& data,
+                                                  const Point<double>& point,
+                                                  const vec3& sphere,
+                                                  const double elevation) {
+    const vec3 elevated = scaled(sphere, 1.0 + elevation / globeRadiusMeters);
+    const float transition = static_cast<float>(data.projectionTransition);
+    vec4 globe = {{elevated[0], elevated[1], elevated[2], 1.0}};
+    matrix::transformMat4(globe, globe, data.mainMatrix);
+    globe[2] = (1.0 - pointPlaneSignedDistance(data.clippingPlane, elevated)) * globe[3] - data.depthOffset;
+    if (transition > 0.999f) {
+        return globe;
+    }
+
+    vec4 flat = {{point.x, point.y, elevation, 1.0}};
+    matrix::transformMat4(flat, flat, data.fallbackMatrix);
+    vec4 result;
+    for (std::size_t index : {0u, 1u, 3u}) {
+        result[index] = std::lerp(flat[index], globe[index], transition);
+    }
+    result[2] = globe[2] * std::clamp((transition - 0.2f) / 0.8f, 0.0f, 1.0f);
+    if (point.y < -32767.5 || point.y > 32766.5) {
+        result = globe;
+        const float hidden = std::pow(std::max((1.0f - transition) / 0.02f, 0.0f), 8.0f);
+        result[2] = std::lerp(globe[2], 100.0, hidden);
+    }
+    return result;
 }
 
 double VerticalPerspectiveProjection::circleRadiusCorrection(const TransformState& state) const {

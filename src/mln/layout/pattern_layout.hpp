@@ -8,7 +8,11 @@
 #include <mln/style/layer_properties.hpp>
 #include <mln/util/containers.hpp>
 
+#include <type_traits>
+
 namespace mln {
+
+class LineBucket;
 
 class PatternDependency {
 public:
@@ -204,7 +208,7 @@ public:
             const PatternLayerMap& patterns = patternFeature.getPatterns();
             const GeometryCollection& geometries = feature->getGeometries();
 
-            featureIndex->insert(geometries, i, sourceLayerID, bucketLeaderID);
+            featureIndex->insert(geometries, i, sourceLayerID, bucketLeaderID, std::is_same_v<BucketType, LineBucket>);
             bucket->addFeature(*feature, geometries, patternPositions, patterns, i, canonical);
         }
         if (bucket->hasData()) {

@@ -308,6 +308,21 @@ MLN_EXPORT
  */
 @property (nonatomic, strong) MLNLight *light;
 
+// MARK: Managing the Style's Projection
+
+/**
+ The map projection, as a constant or zoom-dependent expression.
+
+ Constants may be `mercator`, `vertical-perspective`, `globe`, or an array of
+ `[from, to, transition]`. The `globe` preset changes from vertical perspective
+ to Mercator between zoom levels 11 and 12. A blend's transition is 0 at `from`
+ and 1 at `to`. Feature-dependent expressions are unsupported.
+
+ Setting this property to `nil` restores the default Mercator projection.
+ Changing the projection preserves the style's sources, layers, and images.
+ */
+@property (nonatomic, copy, nullable) NSExpression *projection;
+
 // MARK: Localizing Map Content
 
 /**

@@ -1,5 +1,6 @@
 #include <mln/util/subdivision.hpp>
 #include <mln/util/constants.hpp>
+#include <mln/util/containers.hpp>
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -17,7 +18,6 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
-#include <unordered_map>
 
 namespace mapbox {
 namespace util {
@@ -44,16 +44,28 @@ public:
           granularity(granularity_),
           cellSize(static_cast<double>(EXTENT) / granularity_) {}
 
-    SubdivisionResult subdivide(const GeometryCollection& polygon, bool generateOutlineLines) {
-        std::vector<GeometryCoordinate> flattened;
+    SubdivisionResult subdivide(const GeometryCollection& polygon,
+                                const std::vector<uint32_t>& indices,
+                                bool generateOutlineLines) {
+        std::size_t pointCount = 0;
+        for (const auto& ring : polygon) {
+            pointCount += ring.size();
+        }
+        vertices.reserve(pointCount * 2);
+        dictionary.reserve(pointCount);
+        std::vector<uint32_t> vertexIndices;
+        vertexIndices.reserve(pointCount);
         for (const auto& ring : polygon) {
             for (const auto& point : ring) {
-                flattened.push_back(point);
-                vertexToIndex(point.x, point.y);
+                vertexIndices.push_back(vertexToIndex(point.x, point.y));
             }
         }
 
-        std::vector<uint32_t> triangles = convertIndices(flattened, mapbox::earcut(polygon));
+        std::vector<uint32_t> triangles;
+        triangles.reserve(indices.size());
+        for (const uint32_t index : indices) {
+            triangles.push_back(vertexIndices[index]);
+        }
         triangles = subdivideTrianglesScanline(triangles);
 
         std::vector<std::vector<uint32_t>> lines;
@@ -88,24 +100,13 @@ private:
         const auto xInt = static_cast<int32_t>(std::lround(x));
         const auto yInt = static_cast<int32_t>(std::lround(y));
         const uint32_t k = key(xInt, yInt);
-        if (const auto it = dictionary.find(k); it != dictionary.end()) {
-            return it->second;
-        }
         const auto index = static_cast<uint32_t>(vertices.size() / 2);
-        dictionary.emplace(k, index);
-        vertices.push_back(static_cast<int16_t>(xInt));
-        vertices.push_back(static_cast<int16_t>(yInt));
-        return index;
-    }
-
-    std::vector<uint32_t> convertIndices(const std::vector<GeometryCoordinate>& flattened,
-                                         const std::vector<uint32_t>& indices) {
-        std::vector<uint32_t> converted;
-        converted.reserve(indices.size());
-        for (const uint32_t index : indices) {
-            converted.push_back(vertexToIndex(flattened[index].x, flattened[index].y));
+        const auto [it, inserted] = dictionary.try_emplace(k, index);
+        if (inserted) {
+            vertices.push_back(static_cast<int16_t>(xInt));
+            vertices.push_back(static_cast<int16_t>(yInt));
         }
-        return converted;
+        return it->second;
     }
 
     std::vector<uint32_t> subdivideTrianglesScanline(const std::vector<uint32_t>& inputIndices) {
@@ -114,6 +115,9 @@ private:
         }
 
         std::vector<uint32_t> finalIndices;
+        finalIndices.reserve(inputIndices.size());
+        std::vector<uint32_t> ring;
+        ring.reserve(8);
         for (std::size_t primitive = 0; primitive + 2 < inputIndices.size(); primitive += 3) {
             const std::array<uint32_t, 3> triangleIndices{
                 inputIndices[primitive], inputIndices[primitive + 1], inputIndices[primitive + 2]};
@@ -139,25 +143,27 @@ private:
             const auto cellYmin = static_cast<int32_t>(std::floor(minY / cellSize));
             const auto cellYmax = static_cast<int32_t>(std::ceil(maxY / cellSize));
 
-            if (cellXmin == cellXmax && cellYmin == cellYmax) {
-                finalIndices.insert(finalIndices.end(), triangleIndices.begin(), triangleIndices.end());
+            if (cellXmax - cellXmin == 1 && cellYmax - cellYmin == 1) {
+                ring.assign({triangleIndices[1], triangleIndices[2], triangleIndices[0]});
+                scanlineTriangulateVertexRing(vertices, ring, finalIndices);
                 continue;
             }
 
             for (int32_t cellRow = cellYmin; cellRow < cellYmax; cellRow++) {
-                const std::vector<uint32_t> ring = generateVertexRingForCellRow(cellRow, triangle, triangleIndices);
+                generateVertexRingForCellRow(cellRow, triangle, triangleIndices, ring);
                 scanlineTriangulateVertexRing(vertices, ring, finalIndices);
             }
         }
         return finalIndices;
     }
 
-    std::vector<uint32_t> generateVertexRingForCellRow(int32_t cellRow,
-                                                       const std::array<double, 6>& triangle,
-                                                       const std::array<uint32_t, 3>& triangleIndices) {
+    void generateVertexRingForCellRow(int32_t cellRow,
+                                      const std::array<double, 6>& triangle,
+                                      const std::array<uint32_t, 3>& triangleIndices,
+                                      std::vector<uint32_t>& ring) {
         const double cellRowYTop = cellRow * cellSize;
         const double cellRowYBottom = cellRowYTop + cellSize;
-        std::vector<uint32_t> ring;
+        ring.clear();
 
         for (std::size_t edge = 0; edge < 3; edge++) {
             const double aX = triangle[edge * 2];
@@ -207,7 +213,6 @@ private:
                 generateInterEdgeVertices(ring, aX, aY, bX, bY, cX, cY, exitX, cellRowYTop, cellRowYBottom);
             }
         }
-        return ring;
     }
 
     void generateIntraEdgeVertices(
@@ -290,9 +295,13 @@ private:
 
     std::vector<std::vector<uint32_t>> generateOutline(const GeometryCollection& polygon) {
         std::vector<std::vector<uint32_t>> lines;
+        lines.reserve(polygon.size());
         for (const auto& ring : polygon) {
             const GeometryCoordinates path = subdivideVertexLine(ring, granularity, true);
             std::vector<uint32_t> lineIndices;
+            if (path.size() > 1) {
+                lineIndices.reserve((path.size() - 1) * 2);
+            }
             for (std::size_t i = 1; i < path.size(); i++) {
                 lineIndices.push_back(vertexToIndex(path[i - 1].x, path[i - 1].y));
                 lineIndices.push_back(vertexToIndex(path[i].x, path[i].y));
@@ -389,7 +398,7 @@ private:
     }
 
     std::vector<int16_t> vertices;
-    std::unordered_map<uint32_t, uint32_t> dictionary;
+    mln::unordered_map<uint32_t, uint32_t> dictionary;
     const CanonicalTileID canonical;
     const uint32_t granularity;
     const double cellSize;
@@ -401,7 +410,7 @@ SubdivisionResult subdividePolygon(const GeometryCollection& polygon,
                                    const CanonicalTileID& canonical,
                                    uint32_t granularity,
                                    bool generateOutlineLines) {
-    return Subdivider(granularity, canonical).subdivide(polygon, generateOutlineLines);
+    return Subdivider(granularity, canonical).subdivide(polygon, mapbox::earcut(polygon), generateOutlineLines);
 }
 
 SubdivisionResult subdividePolygonWithinLimit(const GeometryCollection& polygon,
@@ -409,8 +418,9 @@ SubdivisionResult subdividePolygonWithinLimit(const GeometryCollection& polygon,
                                               uint32_t granularity,
                                               bool generateOutlineLines,
                                               std::size_t maxVertices) {
+    const std::vector<uint32_t> indices = mapbox::earcut(polygon);
     while (true) {
-        SubdivisionResult result = subdividePolygon(polygon, canonical, granularity, generateOutlineLines);
+        SubdivisionResult result = Subdivider(granularity, canonical).subdivide(polygon, indices, generateOutlineLines);
         if (result.vertices.size() / 2 <= maxVertices || granularity < 2) {
             return result;
         }
@@ -434,6 +444,7 @@ GeometryCoordinates subdivideVertexLine(const GeometryCoordinates& line, uint32_
 
     const double cellSize = std::floor(static_cast<double>(EXTENT) / granularity);
     GeometryCoordinates result;
+    result.reserve(line.size() + (closeRing ? 1 : 0));
     result.push_back(line.front());
 
     const auto pushUnique = [&](double x, double y) {

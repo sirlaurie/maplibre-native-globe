@@ -89,6 +89,8 @@ public:
 
     virtual void queryRenderedFeatures(std::unordered_map<std::string, std::vector<Feature>>& result,
                                        const GeometryCoordinates& queryGeometry,
+                                       const ScreenLineString& screenGeometry,
+                                       bool intersectsSurface,
                                        const TransformState&,
                                        const std::unordered_map<std::string, const RenderLayer*>&,
                                        const RenderedQueryOptions& options,

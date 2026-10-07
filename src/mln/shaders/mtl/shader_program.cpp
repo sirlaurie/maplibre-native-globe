@@ -9,6 +9,7 @@
 #include <mln/shaders/program_parameters.hpp>
 #include <mln/shaders/shader_manifest.hpp>
 #include <mln/util/logging.hpp>
+#include <mln/util/hash.hpp>
 
 #include <Metal/MTLLibrary.hpp>
 #include <Metal/MTLRenderPass.hpp>
@@ -71,26 +72,47 @@ MTL::BlendFactor metalBlendFactor(const gfx::ColorBlendFactorType& colorFactor) 
 }
 } // namespace
 
-ShaderProgram::ShaderProgram(std::string name, RendererBackend& backend_, MTLFunctionPtr vert, MTLFunctionPtr frag)
+ShaderProgram::ShaderProgram(std::string name,
+                             RendererBackend& backend_,
+                             std::future<Functions> functions,
+                             shaders::BuiltIn shaderID_,
+                             std::string defines_)
     : ShaderProgramBase(),
       shaderName(std::move(name)),
       backend(backend_),
-      vertexFunction(std::move(vert)),
-      fragmentFunction(std::move(frag)) {}
+      pendingFunctions(std::move(functions)),
+      shaderID(shaderID_),
+      defines(std::move(defines_)) {}
 
 ShaderProgram::~ShaderProgram() noexcept = default;
 
 MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Renderable& renderable,
                                                                 const MTLVertexDescriptorPtr& vertexDescriptor,
                                                                 const gfx::ColorMode& colorMode,
-                                                                const std::optional<std::size_t> reuseHash) const {
-    if (reuseHash.has_value()) {
-        // we'd like to reuse a previous value
-        if (auto it = renderPipelineStateCache.find(reuseHash.value()); it != renderPipelineStateCache.end())
-            return it->second;
+                                                                const std::size_t reuseHash) const {
+    auto& context = static_cast<Context&>(backend.getContext());
+    if (pendingFunctions.valid()) {
+        if (pendingFunctions.wait_for(std::chrono::seconds::zero()) != std::future_status::ready) {
+            context.deferRendering();
+            return {};
+        }
+        try {
+            auto functions = pendingFunctions.get();
+            vertexFunction = std::move(functions.vertex);
+            fragmentFunction = std::move(functions.fragment);
+            if (!vertexFunction) {
+                throw std::runtime_error(shaderName + " missing vertex function");
+            }
+        } catch (const std::exception& error) {
+            Log::Error(Event::Shader, error.what());
+            compilationError = std::current_exception();
+        }
+        context.shaderCompilationFinished(shaderID, defines, compilationError);
     }
-
-    auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+    if (compilationError) {
+        context.reportRenderError(compilationError);
+        return {};
+    }
 
     const auto& renderableResource = renderable.getResource<RenderableResource>();
 
@@ -115,6 +137,31 @@ MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Rende
         }
     }
 
+    const auto key = util::hash(reuseHash,
+                                static_cast<std::size_t>(colorFormat),
+                                static_cast<std::size_t>(depthFormat.value_or(MTL::PixelFormatInvalid)),
+                                static_cast<std::size_t>(stencilFormat.value_or(MTL::PixelFormatInvalid)));
+    if (auto it = renderPipelineStateCache.find(key); it != renderPipelineStateCache.end()) {
+        auto& pipeline = it->second;
+        if (pipeline.pending.valid()) {
+            if (pipeline.pending.wait_for(std::chrono::seconds::zero()) != std::future_status::ready) {
+                context.deferRendering();
+                return {};
+            }
+            try {
+                pipeline.ready = pipeline.pending.get();
+            } catch (const std::exception& error) {
+                pipeline.error = std::current_exception();
+                Log::Error(Event::Shader, error.what());
+            }
+        }
+        if (pipeline.error) {
+            context.reportRenderError(pipeline.error);
+        }
+        return pipeline.ready;
+    }
+
+    auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
     auto desc = NS::TransferPtr(MTL::RenderPipelineDescriptor::alloc()->init());
     desc->setLabel(NS::String::string(shaderName.data(), NS::UTF8StringEncoding));
     desc->setVertexFunction(vertexFunction.get());
@@ -160,23 +207,24 @@ MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Rende
         desc->setStencilAttachmentPixelFormat(*stencilFormat);
     }
 
-    NS::Error* error = nullptr;
+    auto promise = std::make_shared<std::promise<MTLRenderPipelineStatePtr>>();
+    renderPipelineStateCache.emplace(key, PipelineState{promise->get_future(), {}, nullptr});
+    context.deferRendering();
+    auto completion = [promise, wake = context.shaderCompilationCallback(), name = shaderName](
+                          MTL::RenderPipelineState* pipeline, NS::Error* error) {
+        if (pipeline) {
+            promise->set_value(NS::RetainPtr(pipeline));
+        } else {
+            const auto* description = error ? error->localizedDescription()->utf8String() : nullptr;
+            promise->set_exception(std::make_exception_ptr(std::runtime_error(
+                name + " newRenderPipelineState failed" + (description ? ": "s + description : ""s))));
+        }
+        wake();
+    };
     const auto& device = backend.getDevice();
-    auto rps = NS::TransferPtr(device->newRenderPipelineState(desc.get(), &error));
-
-    if (!rps || error) {
-        const auto errPtr = error ? error->localizedDescription()->utf8String() : nullptr;
-        const auto errStr = (errPtr && errPtr[0]) ? ": "s + errPtr : std::string();
-        Log::Error(Event::Shader, shaderName + " newRenderPipelineState failed" + errStr);
-        assert(false);
-    }
-
-    if (reuseHash.has_value()) {
-        // store the value for future reuse
-        renderPipelineStateCache[reuseHash.value()] = rps;
-    }
-
-    return rps;
+    device->newRenderPipelineState(desc.get(),
+                                   MTL::NewRenderPipelineStateCompletionHandlerFunction(std::move(completion)));
+    return {};
 }
 
 std::optional<size_t> ShaderProgram::getSamplerLocation(const size_t id) const {

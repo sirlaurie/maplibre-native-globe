@@ -4,7 +4,7 @@
 #include <mln/util/bitmask_operations.hpp>
 #include <mln/util/constants.hpp>
 #include <mln/util/geometry.hpp>
-#include <mln/util/mat4.hpp>
+#include <mln/map/projection_base.hpp>
 
 #include <map>
 #include <set>
@@ -49,7 +49,7 @@ public:
 class CrossTileSymbolLayerIndex {
 public:
     CrossTileSymbolLayerIndex(uint32_t& maxCrossTileID);
-    bool addBucket(const OverscaledTileID&, const mat4& tileMatrix, SymbolBucket&);
+    bool addBucket(const OverscaledTileID&, const ProjectionData&, SymbolBucket&);
     bool removeStaleBuckets(const std::unordered_set<uint32_t>& currentIDs);
     void handleWrapJump(float newLng);
 

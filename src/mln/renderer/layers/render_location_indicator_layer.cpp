@@ -1086,7 +1086,8 @@ void RenderLocationIndicatorLayer::captureRenderedFeatures(const TransformState&
         const auto& position = renderImpl->getPositionMercator();
         std::vector<vec3> visible;
         for (const auto& corner : geom) {
-            const auto latLng = Projection::unproject({position.x + corner.x, position.y + corner.y}, state.getScale());
+            const auto latLng = mln::Projection::unproject({position.x + corner.x, position.y + corner.y},
+                                                           state.getScale());
             if (!state.isLocationOccluded(latLng)) {
                 vec4 clip;
                 state.latLngToScreenCoordinate(latLng, clip);

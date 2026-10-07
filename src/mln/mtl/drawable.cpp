@@ -156,8 +156,11 @@ void Drawable::setDepthType(gfx::DepthMaskType value) {
 }
 
 void Drawable::setShader(gfx::ShaderProgramBasePtr value) {
-    impl->pipelineState.reset();
-    gfx::Drawable::setShader(value);
+    if (shader != value) {
+        impl->pipelineState.reset();
+        attributeUpdateTime.reset();
+        gfx::Drawable::setShader(std::move(value));
+    }
 }
 
 void Drawable::draw(PaintParameters& parameters) const {
@@ -233,7 +236,6 @@ void Drawable::draw(PaintParameters& parameters) const {
     if (impl->pipelineState) {
         renderPass.setRenderPipelineState(impl->pipelineState);
     } else {
-        assert(!"Failed to create render pipeline state");
         return;
     }
 
@@ -447,6 +449,16 @@ void Drawable::uploadTextures(UploadPass&) const {
 }
 
 namespace {
+bool sameAttributeLayouts(const gfx::AttributeBindingArray& lhs, const gfx::AttributeBindingArray& rhs) {
+    return std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(), [](const auto& a, const auto& b) {
+        if (!a || !b) {
+            return static_cast<bool>(a) == static_cast<bool>(b);
+        }
+        return a->attribute == b->attribute && a->vertexStride == b->vertexStride && a->bufferIndex == b->bufferIndex &&
+               static_cast<bool>(a->vertexBufferResource) == static_cast<bool>(b->vertexBufferResource);
+    });
+}
+
 MTL::VertexFormat mtlVertexTypeOf(gfx::AttributeDataType type) noexcept {
     switch (type) {
         case gfx::AttributeDataType::Byte:
@@ -552,6 +564,7 @@ void Drawable::upload(gfx::UploadPass& uploadPass_) {
 
     const bool buildVertexAttribs = !impl->vertexDesc || !vertexAttributes || !attributeUpdateTime ||
                                     vertexAttributes->isModifiedAfter(*attributeUpdateTime);
+    bool layoutChanged = !impl->vertexDesc;
 
     if (buildVertexAttribs) {
 #if !defined(NDEBUG)
@@ -577,6 +590,7 @@ void Drawable::upload(gfx::UploadPass& uploadPass_) {
         vertexAttributes->visitAttributes([](gfx::VertexAttribute& attrib) { attrib.setDirty(false); });
 
         if (impl->attributeBindings != attributeBindings_) {
+            layoutChanged = layoutChanged || !sameAttributeLayouts(impl->attributeBindings, attributeBindings_);
             impl->attributeBindings = std::move(attributeBindings_);
         }
     }
@@ -601,11 +615,12 @@ void Drawable::upload(gfx::UploadPass& uploadPass_) {
         instanceAttributes->visitAttributes([](gfx::VertexAttribute& attrib) { attrib.setDirty(false); });
 
         if (impl->instanceBindings != instanceBindings_) {
+            layoutChanged = layoutChanged || !sameAttributeLayouts(impl->instanceBindings, instanceBindings_);
             impl->instanceBindings = std::move(instanceBindings_);
         }
     }
 
-    if (buildVertexAttribs || buildInstanceAttribs) {
+    if (layoutChanged) {
         // hash
         std::size_t hash{0};
 
@@ -650,6 +665,8 @@ void Drawable::upload(gfx::UploadPass& uploadPass_) {
                                                         binding->attribute.offset,
                                                         binding->attribute.dataType,
                                                         binding->vertexStride,
+                                                        binding->bufferIndex,
+                                                        stepFunction,
                                                         static_cast<bool>(binding->vertexBufferResource)));
 
                 index += 1;

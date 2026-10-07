@@ -1,3 +1,17 @@
+# MapLibre Native Globe for iOS
+
+This fork contains the R9 iOS / Metal globe implementation built on
+[MapLibre Native PR #4533](https://github.com/maplibre/maplibre-native/pull/4533)
+at `9e23aeaa2e2e94dba04e6f8cd5aadbc38d7ca957`. It adds Darwin projection APIs,
+camera and query fixes, rendering lifecycle fixes, and performance work validated
+on iOS. The upstream commit history and licenses are retained.
+
+See the [iOS Globe guide](docs/ios-globe.md) for source provenance, build commands,
+API usage, tests, and validation limits. This repository provides source; the
+official MapLibre packages linked below do not include this fork's changes.
+
+---
+
 <p align="center">
   <img src="https://github.com/user-attachments/assets/7ff2cda8-f564-4e70-a971-d34152f969f0#gh-light-mode-only" alt="MapLibre Logo" width="200">
   <img src="https://github.com/user-attachments/assets/cee8376b-9812-40ff-91c6-2d53f9581b83#gh-dark-mode-only" alt="MapLibre Logo" width="200">

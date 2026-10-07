@@ -1,12 +1,14 @@
 #pragma once
 
 #include <mln/shaders/shader_program_base.hpp>
+#include <mln/shaders/shader_source.hpp>
 #include <mln/mtl/mtl_fwd.hpp>
 #include <mln/mtl/vertex_attribute.hpp>
 
 #include <Foundation/NSSharedPtr.hpp>
 
 #include <optional>
+#include <future>
 #include <string>
 #include <unordered_map>
 
@@ -45,10 +47,13 @@ using UniqueShaderProgram = std::unique_ptr<ShaderProgram>;
 
 class ShaderProgram final : public gfx::ShaderProgramBase {
 public:
-    ShaderProgram(std::string name,
-                  RendererBackend& backend,
-                  MTLFunctionPtr vertexFunction,
-                  MTLFunctionPtr fragmentFunction);
+    struct Functions {
+        MTLFunctionPtr vertex;
+        MTLFunctionPtr fragment;
+    };
+
+    ShaderProgram(
+        std::string name, RendererBackend& backend, std::future<Functions>, shaders::BuiltIn, std::string defines);
     ~ShaderProgram() noexcept override;
 
     static constexpr std::string_view Name{"GenericMTLShader"};
@@ -57,7 +62,7 @@ public:
     MTLRenderPipelineStatePtr getRenderPipelineState(const gfx::Renderable&,
                                                      const MTLVertexDescriptorPtr&,
                                                      const gfx::ColorMode& colorMode,
-                                                     const std::optional<std::size_t> reuseHash) const;
+                                                     std::size_t reuseHash) const;
 
     std::optional<size_t> getSamplerLocation(const size_t id) const override;
 
@@ -70,15 +75,25 @@ public:
     void initTexture(const shaders::TextureInfo&);
 
 protected:
+    struct PipelineState {
+        std::future<MTLRenderPipelineStatePtr> pending;
+        MTLRenderPipelineStatePtr ready;
+        std::exception_ptr error;
+    };
+
     std::string shaderName;
     RendererBackend& backend;
-    MTLFunctionPtr vertexFunction;
-    MTLFunctionPtr fragmentFunction;
+    mutable std::future<Functions> pendingFunctions;
+    const shaders::BuiltIn shaderID;
+    const std::string defines;
+    mutable MTLFunctionPtr vertexFunction;
+    mutable MTLFunctionPtr fragmentFunction;
+    mutable std::exception_ptr compilationError;
     VertexAttributeArray vertexAttributes;
     VertexAttributeArray instanceAttributes;
     std::array<std::optional<size_t>, shaders::maxTextureCountPerShader> textureBindings;
 
-    mutable mln::unordered_map<std::size_t, MTLRenderPipelineStatePtr> renderPipelineStateCache;
+    mutable mln::unordered_map<std::size_t, PipelineState> renderPipelineStateCache;
 };
 
 } // namespace mtl

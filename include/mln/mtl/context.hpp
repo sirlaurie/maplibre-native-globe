@@ -13,9 +13,11 @@
 #include <mln/shaders/layer_ubo.hpp>
 #include <mln/util/noncopyable.hpp>
 #include <mln/util/containers.hpp>
+#include <mln/util/async_task.hpp>
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <tuple>
 #include <vector>
@@ -56,6 +58,13 @@ public:
 
     void beginFrame() override;
     void endFrame() override;
+
+    void deferRendering() { renderingDeferred = true; }
+    bool isRenderingDeferred() const { return renderingDeferred; }
+    bool hasRenderingFailed() const { return renderingFailed; }
+    std::function<void()> shaderCompilationCallback() const;
+    void shaderCompilationFinished(shaders::BuiltIn, const std::string&, std::exception_ptr);
+    void reportRenderError(std::exception_ptr);
 
     std::unique_ptr<gfx::CommandEncoder> createCommandEncoder() override;
 
@@ -181,8 +190,17 @@ public:
     void unbindGlobalUniformBuffers(gfx::RenderPass&) const noexcept override {}
 
 private:
+    struct CompilationWakeState {
+        std::mutex mutex;
+        util::AsyncTask* task = nullptr;
+    };
+
     RendererBackend& backend;
     bool cleanupOnDestruction = true;
+    bool renderingDeferred = false;
+    bool renderingFailed = false;
+    std::shared_ptr<CompilationWakeState> compilationWakeState;
+    util::AsyncTask compilationFinishedTask;
 
     std::optional<BufferResource> emptyBuffer;
     std::optional<BufferResource> tileVertexBuffer;

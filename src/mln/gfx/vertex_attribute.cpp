@@ -87,15 +87,35 @@ const std::unique_ptr<VertexAttribute> VertexAttributeArray::nullref;
 const std::string VertexAttributeArray::attributePrefix = "a_";
 
 VertexAttributeArray::VertexAttributeArray(VertexAttributeArray&& other)
-    : attrs(std::move(other.attrs)) {}
+    : attrs(std::move(other.attrs)),
+      lastModified(util::MonotonicTimer::now()) {}
 
 VertexAttributeArray& VertexAttributeArray::operator=(VertexAttributeArray&& other) {
     attrs = std::move(other.attrs);
+    lastModified = util::MonotonicTimer::now();
     return *this;
 }
 
 const std::unique_ptr<VertexAttribute>& VertexAttributeArray::get(const size_t id) const {
     return (id < attrs.size()) ? attrs[id] : nullref;
+}
+
+const std::unique_ptr<VertexAttribute>& VertexAttributeArray::getOrCreate(size_t id) {
+    assert(id < attrs.size());
+    if (id >= attrs.size()) {
+        return nullref;
+    }
+    if (!attrs[id]) {
+        attrs[id] = create(-1, AttributeDataType::Invalid, 0);
+    }
+    return attrs[id];
+}
+
+void VertexAttributeArray::remove(size_t id) {
+    if (id < attrs.size() && attrs[id]) {
+        attrs[id].reset();
+        lastModified = util::MonotonicTimer::now();
+    }
 }
 
 const std::unique_ptr<VertexAttribute>& VertexAttributeArray::set(const size_t id,
@@ -125,8 +145,9 @@ std::size_t VertexAttributeArray::getMinCount() const {
 
 void VertexAttributeArray::clear() {
     for (auto& attr : attrs) {
-        attr = nullptr;
+        attr.reset();
     }
+    lastModified = util::MonotonicTimer::now();
 }
 
 } // namespace gfx

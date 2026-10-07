@@ -128,15 +128,28 @@ void FillExtrusionBucket::addFeature(const GeometryTileFeature& feature,
         }
 
         auto& triangleSegment = triangleSegments.back();
+#if MLN_RENDER_BACKEND_METAL
+        if (triangleSegment.vertexLength + totalVertices > maxSegmentVertices) throw GeometryTooLongException();
+#endif
         assert(triangleSegment.vertexLength <= std::numeric_limits<uint16_t>::max());
         auto triangleIndex = static_cast<uint16_t>(triangleSegment.vertexLength);
 
+#if MLN_RENDER_BACKEND_METAL
+        std::map<std::pair<int16_t, int16_t>, uint16_t> ringIndices;
+#else
         assert(triangleIndex + (5 * (totalVertices - 1) + 1) <= std::numeric_limits<uint16_t>::max());
+#endif
 
         const auto processRingPoints =
             [&](const Point<double>& p1, const std::optional<Point<double>>& p2, std::size_t& edgeDistance) {
 #if MLN_USE_FILL_EXTRUSION_INSTANCING
                 vertices.emplace_back(layoutVertex(p1, edgeDistance, !p2));
+#if MLN_RENDER_BACKEND_METAL
+                if (roof) {
+                    ringIndices.try_emplace(std::pair{static_cast<int16_t>(p1.x), static_cast<int16_t>(p1.y)},
+                                            triangleIndex);
+                }
+#endif
                 flatIndices.emplace_back(triangleIndex);
                 triangleIndex++;
 
@@ -214,10 +227,23 @@ void FillExtrusionBucket::addFeature(const GeometryTileFeature& feature,
         assert(nIndices % 3 == 0);
 
         if (roof) {
+#if MLN_RENDER_BACKEND_METAL
+            std::vector<uint16_t> roofIndices;
+            roofIndices.reserve(roof->vertices.size() / 2);
+#else
             const auto base = triangleIndex;
+#endif
             for (std::size_t i = 0; i + 1 < roof->vertices.size(); i += 2) {
                 const Point<double> p{static_cast<double>(roof->vertices[i]),
                                       static_cast<double>(roof->vertices[i + 1])};
+#if MLN_RENDER_BACKEND_METAL
+                const auto ringIndex = ringIndices.find(std::pair{roof->vertices[i], roof->vertices[i + 1]});
+                if (ringIndex != ringIndices.end()) {
+                    roofIndices.push_back(ringIndex->second);
+                    continue;
+                }
+                roofIndices.push_back(triangleIndex);
+#endif
 #if MLN_USE_FILL_EXTRUSION_INSTANCING
                 vertices.emplace_back(layoutVertex(p, 0, true));
 #else
@@ -228,9 +254,15 @@ void FillExtrusionBucket::addFeature(const GeometryTileFeature& feature,
             nIndices = roof->triangleIndices.size();
             assert(nIndices % 3 == 0);
             for (std::size_t i = 0; i + 2 < nIndices; i += 3) {
+#if MLN_RENDER_BACKEND_METAL
+                triangles.emplace_back(roofIndices[roof->triangleIndices[i]],
+                                       roofIndices[roof->triangleIndices[i + 1]],
+                                       roofIndices[roof->triangleIndices[i + 2]]);
+#else
                 triangles.emplace_back(static_cast<uint16_t>(base + roof->triangleIndices[i]),
                                        static_cast<uint16_t>(base + roof->triangleIndices[i + 1]),
                                        static_cast<uint16_t>(base + roof->triangleIndices[i + 2]));
+#endif
             }
         } else {
             for (std::size_t i = 0; i < nIndices; i += 3) {
@@ -241,13 +273,18 @@ void FillExtrusionBucket::addFeature(const GeometryTileFeature& feature,
             }
         }
 
-        triangleSegment.vertexLength += totalVertices;
+#if MLN_RENDER_BACKEND_METAL
+        const auto addedVertices = vertices.elements() - startVertices;
+#else
+        const auto addedVertices = totalVertices;
+#endif
+        triangleSegment.vertexLength += addedVertices;
         triangleSegment.indexLength += nIndices;
 
         if (instanceSegments.empty()) {
             instanceSegments.emplace_back(RenderStaticData::fillExtrusionSegment());
         }
-        instanceSegments.back().instanceCount += totalVertices;
+        instanceSegments.back().instanceCount += addedVertices;
     }
 
     for (auto& pair : paintPropertyBinders) {

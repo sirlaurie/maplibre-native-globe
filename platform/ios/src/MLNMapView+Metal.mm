@@ -3,6 +3,7 @@
 #import "MLNLoggingConfiguration_Private.h"
 #import "MLNMapView+Metal.h"
 
+#import <mln/mtl/context.hpp>
 #import <mln/mtl/renderable_resource.hpp>
 
 #import <Metal/Metal.h>
@@ -70,16 +71,18 @@ public:
   }
 
   void swap() override {
-    id<CAMetalDrawable> currentDrawable = [mtlView currentDrawable];
-    if (currentDrawable) {
-      if (presentsWithTransaction) {
-        [commandBuffer commit];
-        [commandBuffer waitUntilCompleted];
-        [currentDrawable present];
-      } else {
-        [commandBuffer presentDrawable:currentDrawable];
-        [commandBuffer commit];
-      }
+    const auto& context = static_cast<const mln::mtl::Context&>(backend.getContext());
+    const bool shouldPresent = !context.isRenderingDeferred() && !context.hasRenderingFailed();
+    id<CAMetalDrawable> currentDrawable = shouldPresent ? [mtlView currentDrawable] : nil;
+    if (currentDrawable && !presentsWithTransaction) {
+      [commandBuffer presentDrawable:currentDrawable];
+    }
+
+    [commandBuffer commit];
+
+    if (currentDrawable && presentsWithTransaction) {
+      [commandBuffer waitUntilCompleted];
+      [currentDrawable present];
     }
 
     commandBuffer = nil;

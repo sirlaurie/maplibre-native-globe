@@ -50,7 +50,7 @@ private:
                                 float,
                                 const TransformState &,
                                 float,
-                                const mat4 &,
+                                const FeatureQueryContext &,
                                 const FeatureState &) const override;
 
     void captureRenderedFeatures(const LineBucket &,

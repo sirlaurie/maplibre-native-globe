@@ -274,53 +274,56 @@ void updateTileAttributes(const SymbolBucket::Buffer& buffer,
 
 #if MLN_USE_SYMBOL_INSTANCING
     if (!buffer.sortedInstances().empty()) {
-        if (const auto& attr = attribs.set(idSymbolSortedInstanceAttribute)) {
+        if (const auto& attr = attribs.getOrCreate(idSymbolSortedInstanceAttribute)) {
             attr->setSharedRawData(buffer.sharedSortedInstances,
                                    offsetof(SymbolSortedInstance, a1),
                                    /*vertexOffset=*/0,
                                    sizeof(SymbolSortedInstance),
                                    gfx::AttributeDataType::UShort);
         }
-    } else if (propertiesAsUniforms) {
-        propertiesAsUniforms->first.emplace(sortedInstanceUniformName);
-        propertiesAsUniforms->second.emplace(idSymbolSortedInstanceAttribute);
+    } else {
+        attribs.remove(idSymbolSortedInstanceAttribute);
+        if (propertiesAsUniforms) {
+            propertiesAsUniforms->first.emplace(sortedInstanceUniformName);
+            propertiesAsUniforms->second.emplace(idSymbolSortedInstanceAttribute);
+        }
     }
-    if (const auto& attr = attribs.set(idSymbolPosScaleAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolPosScaleAttribute)) {
         attr->setSharedRawData(buffer.sharedAttributeData,
                                offsetof(SymbolLayoutAttributes, a1),
                                /*vertexOffset=*/0,
                                sizeof(SymbolLayoutAttributes),
                                gfx::AttributeDataType::Short4);
     }
-    if (const auto& attr = attribs.set(idSymbolOffsetTlTrAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolOffsetTlTrAttribute)) {
         attr->setSharedRawData(buffer.sharedAttributeData,
                                offsetof(SymbolLayoutAttributes, a2),
                                /*vertexOffset=*/0,
                                sizeof(SymbolLayoutAttributes),
                                gfx::AttributeDataType::Short4);
     }
-    if (const auto& attr = attribs.set(idSymbolOffsetBlBrAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolOffsetBlBrAttribute)) {
         attr->setSharedRawData(buffer.sharedAttributeData,
                                offsetof(SymbolLayoutAttributes, a3),
                                /*vertexOffset=*/0,
                                sizeof(SymbolLayoutAttributes),
                                gfx::AttributeDataType::Short4);
     }
-    if (const auto& attr = attribs.set(idSymbolTextureRectAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolTextureRectAttribute)) {
         attr->setSharedRawData(buffer.sharedAttributeData,
                                offsetof(SymbolLayoutAttributes, a4),
                                /*vertexOffset=*/0,
                                sizeof(SymbolLayoutAttributes),
                                gfx::AttributeDataType::UShort4);
     }
-    if (const auto& attr = attribs.set(idSymbolPixelOffsetAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolPixelOffsetAttribute)) {
         attr->setSharedRawData(buffer.sharedAttributeData,
                                offsetof(SymbolLayoutAttributes, a5),
                                /*vertexOffset=*/0,
                                sizeof(SymbolLayoutAttributes),
                                gfx::AttributeDataType::Short4);
     }
-    if (const auto& attr = attribs.set(idSymbolSizeSdfAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolSizeSdfAttribute)) {
         attr->setSharedRawData(buffer.sharedAttributeData,
                                offsetof(SymbolLayoutAttributes, a6),
                                /*vertexOffset=*/0,
@@ -328,21 +331,21 @@ void updateTileAttributes(const SymbolBucket::Buffer& buffer,
                                gfx::AttributeDataType::UShort2);
     }
 #else
-    if (const auto& attr = attribs.set(idSymbolPosOffsetAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolPosOffsetAttribute)) {
         attr->setSharedRawData(buffer.sharedAttributeData,
                                offsetof(SymbolLayoutAttributes, a1),
                                /*vertexOffset=*/0,
                                sizeof(SymbolLayoutAttributes),
                                gfx::AttributeDataType::Short4);
     }
-    if (const auto& attr = attribs.set(idSymbolDataAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolDataAttribute)) {
         attr->setSharedRawData(buffer.sharedAttributeData,
                                offsetof(SymbolLayoutAttributes, a2),
                                /*vertexOffset=*/0,
                                sizeof(SymbolLayoutAttributes),
                                gfx::AttributeDataType::UShort4);
     }
-    if (const auto& attr = attribs.set(idSymbolPixelOffsetAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolPixelOffsetAttribute)) {
         attr->setSharedRawData(buffer.sharedAttributeData,
                                offsetof(SymbolLayoutAttributes, a3),
                                /*vertexOffset=*/0,
@@ -351,14 +354,14 @@ void updateTileAttributes(const SymbolBucket::Buffer& buffer,
     }
 #endif
 
-    if (const auto& attr = attribs.set(idSymbolProjectedPosAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolProjectedPosAttribute)) {
         attr->setSharedRawData(buffer.sharedDynamicAttributeData,
                                offsetof(SymbolDynamicLayoutAttributes, a1),
                                /*vertexOffset=*/0,
                                sizeof(SymbolDynamicLayoutAttributes),
                                gfx::AttributeDataType::Float3);
     }
-    if (const auto& attr = attribs.set(idSymbolFadeOpacityAttribute)) {
+    if (const auto& attr = attribs.getOrCreate(idSymbolFadeOpacityAttribute)) {
         attr->setSharedRawData(buffer.sharedOpacityAttributeData,
                                offsetof(SymbolOpacityAttributes, a1),
                                /*vertexOffset=*/0,

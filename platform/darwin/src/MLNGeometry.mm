@@ -47,8 +47,9 @@ mln::LatLng MLNLatLngFromLocationCoordinate2D(CLLocationCoordinate2D coordinate)
 
 CLLocationDistance MLNAltitudeForZoomLevel(double zoomLevel, CGFloat pitch,
                                            CLLocationDegrees latitude, CGSize size) {
-  CLLocationDistance metersPerPixel =
-      mln::Projection::getMetersPerPixelAtLatitude(latitude, zoomLevel);
+  CLLocationDistance metersPerPixel = std::cos(MLNRadiansFromDegrees(latitude)) * mln::util::M2PI *
+                                      mln::util::EARTH_RADIUS_M /
+                                      (mln::util::tileSize_D * std::exp2(zoomLevel));
   CLLocationDistance metersTall = metersPerPixel * size.height;
   CLLocationDistance altitude =
       metersTall / 2 / std::tan(MLNRadiansFromDegrees(MLNAngularFieldOfView) / 2.);

@@ -12,6 +12,7 @@
 #include <mln/gfx/shader_registry.hpp>
 #include <mln/map/map_options.hpp>
 #include <mln/map/map_projection.hpp>
+#include <mln/map/transform.hpp>
 #include <mln/math/log2.hpp>
 #include <mln/renderer/renderer.hpp>
 #include <mln/renderer/update_parameters.hpp>
@@ -99,6 +100,115 @@ public:
               fileSource,
               MapOptions().withMapMode(mode).withSize(frontend.getSize()).withPixelRatio(pixelRatio)) {}
 };
+
+TEST(Map, GlobeBoundsContainVisibleLatitudeExtrema) {
+    MapTest<> test;
+    test.map.getStyle().loadJSON(util::read_file("test/fixtures/api/empty.json"));
+    test.map.getStyle().getProjection()->setType(ProjectionDefinition("vertical-perspective"));
+    for (const double bearing : {0.0, 22.5}) {
+        test.map.jumpTo(CameraOptions().withCenter(LatLng{0.0, 0.0}).withZoom(0.0).withBearing(bearing));
+        test.frontend.render(test.map);
+        const auto bounds = test.map.latLngBoundsForCamera(test.map.getCameraOptions());
+        for (const double latitude : {-75.0, -60.0, 60.0, 75.0}) {
+            EXPECT_TRUE(bounds.contains(LatLng{latitude, 0.0})) << latitude << ", " << bearing;
+        }
+    }
+}
+
+TEST(Map, GlobeCameraFitsCountryBoundsInsidePadding) {
+    MapTest<> test;
+    test.map.getStyle().loadJSON(util::read_file("test/fixtures/api/empty.json"));
+    test.map.getStyle().getProjection()->setType(ProjectionDefinition("globe"));
+    const EdgeInsets padding{30, 20, 60, 20};
+    const Size size = test.map.getMapOptions().size();
+    for (const auto bounds : {LatLngBounds::hull({-44, 113}, {-10, 154}),
+                              LatLngBounds::hull({-21, 177}, {-12, 183}),
+                              LatLngBounds::hull({58, 5}, {71, 31}),
+                              LatLngBounds::hull({85, 170}, {89, 190})}) {
+        SCOPED_TRACE(testing::Message() << bounds.south() << ", " << bounds.west());
+        test.map.jumpTo(CameraOptions().withCenter(LatLng{0, 0}).withZoom(0));
+        test.frontend.render(test.map);
+        const auto camera = test.map.cameraForLatLngBounds(bounds, padding);
+        test.map.jumpTo(CameraOptions(camera).withPadding(padding));
+        test.frontend.render(test.map);
+        for (const LatLng coordinate :
+             {bounds.southwest(), bounds.southeast(), bounds.northwest(), bounds.northeast()}) {
+            const auto point = test.map.pixelForLatLng(coordinate);
+            EXPECT_FALSE(test.map.isLocationOccluded(coordinate));
+            EXPECT_GE(point.x, padding.left() - 1e-4);
+            EXPECT_LE(point.x, size.width - padding.right() + 1e-4);
+            EXPECT_GE(point.y, padding.top() - 1e-4);
+            EXPECT_LE(point.y, size.height - padding.bottom() + 1e-4);
+        }
+    }
+}
+
+TEST(Map, GlobeBoundsIncludeEveryLongitudeWhenAPoleIsVisible) {
+    Transform transform;
+    transform.resize({800, 600});
+    transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective"));
+    transform.jumpTo(CameraOptions().withCenter(LatLng{75.0, 175.0}).withZoom(0.0).withBearing(22.5));
+    const auto bounds = transform.getState().globeBoundsForScreenBox({{0.0, 0.0}, {800.0, 600.0}});
+    EXPECT_DOUBLE_EQ(bounds.north(), 90.0);
+    EXPECT_DOUBLE_EQ(bounds.east() - bounds.west(), 360.0);
+}
+
+TEST(Map, GlobeBoundsRemainUnwrappedAcrossTheAntimeridian) {
+    Transform transform;
+    transform.resize({800, 600});
+    transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective"));
+    transform.jumpTo(CameraOptions().withCenter(LatLng{0.0, 175.0}).withZoom(3.0).withBearing(22.5));
+    const auto bounds = transform.getState().globeBoundsForScreenBox({{0.0, 0.0}, {800.0, 600.0}});
+    EXPECT_TRUE(bounds.contains(LatLng{0.0, 165.0}));
+    EXPECT_TRUE(bounds.contains(LatLng{0.0, 185.0}));
+    EXPECT_LT(bounds.east() - bounds.west(), 180.0);
+}
+
+TEST(Map, GlobeBoundsOfSkyAreEmpty) {
+    Transform transform;
+    transform.resize({800, 600});
+    transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective"));
+    transform.jumpTo(CameraOptions().withCenter(LatLng{0.0, 0.0}).withZoom(0.0));
+    EXPECT_TRUE(transform.getState().globeBoundsForScreenBox({{0.0, 0.0}, {10.0, 10.0}}).isEmpty());
+}
+
+TEST(Map, GlobeBoundsContainVisibleSurfaceAcrossProjectionTransitionsWithinSubmeterPrecision) {
+    constexpr double angularPrecision = 1e-6;
+    for (const double transition : {0.0001, 0.2, 0.5, 0.98, 1.0}) {
+        for (const double zoom : {-2.0, 0.0, 3.0}) {
+            Transform transform;
+            transform.resize({800, 600});
+            transform.setProjectionDefinition(ProjectionDefinition("mercator", "vertical-perspective", transition));
+            transform.jumpTo(
+                CameraOptions().withCenter(LatLng{25.0, 175.0}).withZoom(zoom).withBearing(22.5).withPitch(30.0));
+            const auto& state = transform.getState();
+            for (const ScreenBox box :
+                 {ScreenBox{{0.0, 0.0}, {800.0, 600.0}}, ScreenBox{{200.0, 150.0}, {600.0, 450.0}}}) {
+                SCOPED_TRACE(testing::Message() << transition << ", " << zoom << ", " << box.min.x);
+                const auto bounds = state.globeBoundsForScreenBox(box);
+                ASSERT_FALSE(bounds.isEmpty());
+                const auto precisionBounds = LatLngBounds::hull(
+                    {std::max(-90.0, bounds.south() - angularPrecision), bounds.west() - angularPrecision},
+                    {std::min(90.0, bounds.north() + angularPrecision), bounds.east() + angularPrecision});
+                std::size_t visible = 0;
+                for (double latitude = -90.0; latitude <= 90.0; latitude += 5.0) {
+                    for (double longitude = -5.0; longitude <= 355.0; longitude += 5.0) {
+                        const LatLng coordinate{latitude, longitude};
+                        const auto point = state.latLngToScreenCoordinate(coordinate);
+                        if (point.x > box.min.x + 1e-4 && point.x < box.max.x - 1e-4 && point.y > box.min.y + 1e-4 &&
+                            point.y < box.max.y - 1e-4 && !state.isLocationOccluded(coordinate)) {
+                            ++visible;
+                            ASSERT_TRUE(precisionBounds.contains(coordinate, LatLng::Wrapped))
+                                << latitude << ", " << longitude << "; bounds=" << bounds.south() << ", "
+                                << bounds.west() << ", " << bounds.north() << ", " << bounds.east();
+                        }
+                    }
+                }
+                EXPECT_GT(visible, 0u);
+            }
+        }
+    }
+}
 
 TEST(Map, RendererState) {
     MapTest<> test;

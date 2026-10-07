@@ -95,6 +95,7 @@ public:
     double getFieldOfView() const;
 
     // Projection
+    void setProjection(const Immutable<style::Projection::Impl>&);
     void setProjectionDefinition(const ProjectionDefinition&);
     void setNorthOrientation(NorthOrientation);
     NorthOrientation getNorthOrientation() const;

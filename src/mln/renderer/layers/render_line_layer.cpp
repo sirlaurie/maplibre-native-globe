@@ -29,6 +29,8 @@
 #include <mln/util/intersection_tests.hpp>
 #include <mln/util/logging.hpp>
 #include <mln/util/math.hpp>
+#include <mln/util/subdivision.hpp>
+#include <mln/util/subdivision_granularity.hpp>
 
 namespace mln {
 
@@ -129,8 +131,8 @@ void RenderLineLayer::prepare(const LayerPrepareParameters& params) {
 
 namespace {
 
-GeometryCollection offsetLine(const GeometryCollection& rings, double offset) {
-    assert(offset != 0.0f);
+template <typename Offset>
+GeometryCollection offsetLine(const GeometryCollection& rings, const Offset& offsetAt) {
     assert(!rings.empty());
 
     GeometryCollection newRings;
@@ -153,6 +155,7 @@ GeometryCollection offsetLine(const GeometryCollection& rings, double offset) {
             const double cosHalfAngle = extrude.x * bToC.x + extrude.y * bToC.y;
             extrude *= (cosHalfAngle != 0) ? (1.0 / cosHalfAngle) : 0;
 
+            const double offset = offsetAt(p);
             newRing.emplace_back(convertPoint<int16_t>(extrude * offset) + p);
         }
     }
@@ -259,8 +262,12 @@ bool RenderLineLayer::queryIntersectsFeature(const GeometryCoordinates& queryGeo
                                              const float zoom,
                                              const TransformState& transformState,
                                              const float pixelsToTileUnits,
-                                             const mat4&,
+                                             const FeatureQueryContext& queryContext,
                                              const FeatureState& featureState) const {
+    if (!queryContext.intersectsSurface) {
+        return false;
+    }
+
     const auto& evaluated = static_cast<const LineLayerProperties&>(*evaluatedProperties).evaluated;
     // Translate query geometry
     auto translatedQueryGeometry = FeatureIndex::translateQueryGeometry(queryGeometry,
@@ -276,10 +283,34 @@ bool RenderLineLayer::queryIntersectsFeature(const GeometryCoordinates& queryGeo
     // Test intersection
     const auto halfWidth = static_cast<float>(getLineWidth(feature, zoom, featureState) / 2.0 * pixelsToTileUnits);
 
+    if (transformState.isGlobeRendering()) {
+        const auto& projector = queryContext.projector;
+        const auto granularity = SubdivisionGranularitySetting::globe().line.getGranularityForZoomLevel(
+            projector.getTileID().canonical.z);
+        GeometryCollection lines;
+        std::vector<std::vector<float>> radii;
+        for (const auto& ring : feature.getGeometries()) {
+            lines.push_back(granularity >= 2 ? util::subdivideVertexLine(ring, granularity) : ring);
+            auto& lineRadii = radii.emplace_back();
+            for (const auto& point : lines.back()) {
+                lineRadii.push_back(static_cast<float>(halfWidth * projector.lineThicknessCorrection(point.y)));
+            }
+        }
+        if (offset != 0.0f && !lines.empty()) {
+            const auto offsetAt = [&](const GeometryCoordinate& point) {
+                return offset * projector.lineThicknessCorrection(point.y);
+            };
+            lines = offsetLine(lines, offsetAt);
+        }
+        return util::polygonIntersectsBufferedMultiLine(translatedQueryGeometry.value_or(queryGeometry), lines, radii);
+    }
+
     // Apply offset to geometry
     if (offset != 0.0f && !feature.getGeometries().empty()) {
         return util::polygonIntersectsBufferedMultiLine(
-            translatedQueryGeometry.value_or(queryGeometry), offsetLine(feature.getGeometries(), offset), halfWidth);
+            translatedQueryGeometry.value_or(queryGeometry),
+            offsetLine(feature.getGeometries(), [offset](const GeometryCoordinate&) { return offset; }),
+            halfWidth);
     }
 
     return util::polygonIntersectsBufferedMultiLine(

@@ -1,4 +1,5 @@
 #include <mln/text/cross_tile_symbol_index.hpp>
+#include <mln/map/vertical_perspective_projection.hpp>
 
 #include <mln/layout/symbol_instance.hpp>
 #include <mln/renderer/buckets/symbol_bucket.hpp>
@@ -107,22 +108,28 @@ void CrossTileSymbolLayerIndex::handleWrapJump(float newLng) {
 
 namespace {
 
-bool isInVewport(const mat4& posMatrix, const Point<float>& point) {
-    vec4 p = {{point.x, point.y, 0, 1}};
-    matrix::transformMat4(p, p, posMatrix);
+bool isInViewport(const ProjectionData& projection, const OverscaledTileID& tileID, const Point<float>& point) {
+    Point<double> projected;
+    if (projection.projectionTransition > 0) {
+        projected = VerticalPerspectiveProjection{}
+                        .projectTilePoint(projection, tileID.toUnwrapped(), {point.x, point.y}, 0)
+                        .point;
+    } else {
+        vec4 p = {{point.x, point.y, 0, 1}};
+        matrix::transformMat4(p, p, projection.mainMatrix);
+        projected = {p[0] / p[3], p[1] / p[3]};
+    }
 
     // buffer covers area of the next zoom level (current zoom - 1 covered area).
     constexpr double buffer = 1.0;
     constexpr double edge = 1.0 + buffer;
-    const double x = p[0] / p[3];
-    const double y = p[1] / p[3];
-    return (x > -edge && y > -edge && x < edge && y < edge);
+    return (projected.x > -edge && projected.y > -edge && projected.x < edge && projected.y < edge);
 }
 
 } // namespace
 
 bool CrossTileSymbolLayerIndex::addBucket(const OverscaledTileID& tileID,
-                                          const mat4& tileMatrix,
+                                          const ProjectionData& projection,
                                           SymbolBucket& bucket) {
     auto& thisZoomIndexes = indexes[tileID.overscaledZ];
     auto previousIndex = thisZoomIndexes.find(tileID);
@@ -145,7 +152,8 @@ bool CrossTileSymbolLayerIndex::addBucket(const OverscaledTileID& tileID,
         // For overscaled tiles the viewport might be showing only a small part of the tile,
         // so we filter out the off-screen symbols to improve the performance.
         for (auto& symbolInstance : bucket.symbolInstances) {
-            if (symbolInstance.check(SYM_GUARD_LOC) && isInVewport(tileMatrix, symbolInstance.getAnchor().point)) {
+            if (symbolInstance.check(SYM_GUARD_LOC) &&
+                isInViewport(projection, tileID, symbolInstance.getAnchor().point)) {
                 symbolInstance.setCrossTileID(0u);
             } else {
                 symbolInstance.setCrossTileID(SymbolInstance::invalidCrossTileID);

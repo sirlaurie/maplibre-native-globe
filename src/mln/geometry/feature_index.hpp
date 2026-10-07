@@ -18,8 +18,15 @@ class RenderedQueryOptions;
 class RenderLayer;
 class TransformState;
 class SourceFeatureState;
+class TileProjector;
 
 class CollisionIndex;
+
+struct FeatureQueryContext {
+    const ScreenLineString& screenGeometry;
+    const TileProjector& projector;
+    bool intersectsSurface;
+};
 
 /// An indexed element within a feature index.
 /// This version holds a reference to the strings within the index itself to avoid making tens of thousands of
@@ -116,12 +123,13 @@ public:
     void insert(const GeometryCollection&,
                 std::size_t index,
                 const std::string& sourceLayerName,
-                const std::string& bucketLeaderID);
+                const std::string& bucketLeaderID,
+                bool includeTileBuffer = false);
 
     void query(std::unordered_map<std::string, std::vector<Feature>>& result,
                const GeometryCoordinates& queryGeometry,
                const TransformState&,
-               const mat4& posMatrix,
+               const FeatureQueryContext& queryContext,
                double tileSize,
                double scale,
                const RenderedQueryOptions& options,
@@ -157,7 +165,7 @@ private:
                     const GeometryCoordinates& queryGeometry,
                     const TransformState& transformState,
                     float pixelsToTileUnits,
-                    const mat4& posMatrix,
+                    const FeatureQueryContext* queryContext,
                     const SourceFeatureState* sourceFeatureState) const;
 
     GridIndex<RefIndexedSubfeature> grid;

@@ -96,10 +96,7 @@ struct FragmentStage {
 
 FragmentStage vertex vertexMain(VertexStage in [[stage_in]],
                                 device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
-                                device const BackgroundDrawableUnionUBO* drawableVector [[buffer(idBackgroundDrawableUBO)]],
                                 device const ProjectionUBO* projectionVector [[buffer(idProjectionUBO)]]) {
-
-    device const BackgroundDrawableUBO& drawable = drawableVector[uboIndex].backgroundDrawableUBO;
 
     return {
         .position = projectTile(float2(in.position.xy), float2(in.position.xy), projectionVector[uboIndex])

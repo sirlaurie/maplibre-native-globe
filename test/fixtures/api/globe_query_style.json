@@ -1,0 +1,91 @@
+{
+  "version": 8,
+  "projection": { "type": "globe" },
+  "center": [0, 0],
+  "zoom": 0,
+  "sources": {
+    "features": {
+      "type": "geojson",
+      "maxzoom": 0,
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "id": "center",
+            "properties": {},
+            "geometry": { "type": "Point", "coordinates": [0, 0] }
+          },
+          {
+            "type": "Feature",
+            "id": "horizon",
+            "properties": {},
+            "geometry": { "type": "Point", "coordinates": [75, 0] }
+          },
+          {
+            "type": "Feature",
+            "id": "north",
+            "properties": {},
+            "geometry": { "type": "Point", "coordinates": [0, 75] }
+          },
+          {
+            "type": "Feature",
+            "id": "antimeridian",
+            "properties": {},
+            "geometry": { "type": "Point", "coordinates": [-170, 0] }
+          },
+          {
+            "type": "Feature",
+            "id": "back",
+            "properties": {},
+            "geometry": { "type": "Point", "coordinates": [180, 0] }
+          },
+          {
+            "type": "Feature",
+            "id": "area",
+            "properties": {},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[[-170, -80], [170, -80], [170, 80], [-170, 80], [-170, -80]]]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": "route",
+            "properties": {},
+            "geometry": { "type": "LineString", "coordinates": [[70, -35], [70, 35]] }
+          },
+          {
+            "type": "Feature",
+            "id": "north-route",
+            "properties": {},
+            "geometry": { "type": "LineString", "coordinates": [[-35, 70], [35, 70]] }
+          }
+        ]
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "fill",
+      "type": "fill",
+      "source": "features",
+      "filter": ["==", "$type", "Polygon"],
+      "paint": { "fill-color": "#336699", "fill-antialias": false }
+    },
+    {
+      "id": "circles",
+      "type": "circle",
+      "source": "features",
+      "filter": ["==", "$type", "Point"],
+      "paint": { "circle-radius": 6, "circle-color": "#ff6600" }
+    },
+    {
+      "id": "line",
+      "type": "line",
+      "source": "features",
+      "filter": ["==", "$type", "LineString"],
+      "paint": { "line-width": 32, "line-color": "#00ff00" }
+    }
+  ]
+}

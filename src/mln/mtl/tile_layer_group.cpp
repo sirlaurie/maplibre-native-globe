@@ -112,10 +112,15 @@ void TileLayerGroup::render(RenderOrchestrator&, PaintParameters& parameters) {
 
         if (stencil3d) {
             stencilMode3d = parameters.stencilModeFor3D();
+            if (!parameters.stencilBufferReady) {
+                return;
+            }
             encoder->setStencilReferenceValue(stencilMode3d.ref);
         }
     } else if (hasStencilTiles) {
-        parameters.renderTileClippingMasks(stencilTiles);
+        if (!parameters.renderTileClippingMasks(stencilTiles)) {
+            return;
+        }
     }
 
     bool bindUBOs = false;

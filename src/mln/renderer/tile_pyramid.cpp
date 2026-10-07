@@ -4,6 +4,7 @@
 #include <mln/renderer/tile_parameters.hpp>
 #include <mln/renderer/query.hpp>
 #include <mln/map/transform.hpp>
+#include <mln/map/vertical_perspective_projection.hpp>
 #include <mln/math/clamp.hpp>
 #include <mln/actor/scheduler.hpp>
 #include <mln/util/tile_cover.hpp>
@@ -360,6 +361,26 @@ std::unordered_map<std::string, std::vector<Feature>> TilePyramid::queryRendered
         return result;
     }
 
+    bool intersectsSurface = true;
+    if (transformState.isGlobeRendering()) {
+        const double height = transformState.getSize().height;
+        if (geometry.size() == 1) {
+            intersectsSurface = VerticalPerspectiveProjection::screenCoordinateToSurfaceIntersection(
+                                    transformState, {geometry.front().x, height - geometry.front().y})
+                                    .has_value();
+        } else {
+            const auto bounds = mapbox::geometry::envelope(geometry);
+            const ScreenBox screenBounds{{bounds.min.x, height - bounds.max.y}, {bounds.max.x, height - bounds.min.y}};
+            const ScreenCoordinate center{(screenBounds.min.x + screenBounds.max.x) * 0.5,
+                                          (screenBounds.min.y + screenBounds.max.y) * 0.5};
+            intersectsSurface = !transformState.getSize().isEmpty() &&
+                                (VerticalPerspectiveProjection::screenCoordinateToSurfaceIntersection(transformState,
+                                                                                                      center)
+                                     .has_value() ||
+                                 !transformState.globeBoundsForScreenBox(screenBounds).isEmpty());
+        }
+    }
+
     LineString<double> queryGeometry;
     queryGeometry.reserve(geometry.size());
 
@@ -391,13 +412,14 @@ std::unordered_map<std::string, std::vector<Feature>> TilePyramid::queryRendered
                             scale;
 
         GeometryCoordinate tileSpaceBoundsMin = TileCoordinate::toGeometryCoordinate(id, box.min);
-        if (tileSpaceBoundsMin.x - queryPadding >= util::EXTENT ||
-            tileSpaceBoundsMin.y - queryPadding >= util::EXTENT) {
+        if (!transformState.isGlobeRendering() && (tileSpaceBoundsMin.x - queryPadding >= util::EXTENT ||
+                                                   tileSpaceBoundsMin.y - queryPadding >= util::EXTENT)) {
             continue;
         }
 
         GeometryCoordinate tileSpaceBoundsMax = TileCoordinate::toGeometryCoordinate(id, box.max);
-        if (tileSpaceBoundsMax.x + queryPadding < 0 || tileSpaceBoundsMax.y + queryPadding < 0) {
+        if (!transformState.isGlobeRendering() &&
+            (tileSpaceBoundsMax.x + queryPadding < 0 || tileSpaceBoundsMax.y + queryPadding < 0)) {
             continue;
         }
 
@@ -407,8 +429,16 @@ std::unordered_map<std::string, std::vector<Feature>> TilePyramid::queryRendered
             tileSpaceQueryGeometry.push_back(TileCoordinate::toGeometryCoordinate(id, c));
         }
 
-        tile.queryRenderedFeatures(
-            result, tileSpaceQueryGeometry, transformState, layers, options, globalState, projMatrix, featureState);
+        tile.queryRenderedFeatures(result,
+                                   tileSpaceQueryGeometry,
+                                   geometry,
+                                   intersectsSurface,
+                                   transformState,
+                                   layers,
+                                   options,
+                                   globalState,
+                                   projMatrix,
+                                   featureState);
     }
 
     return result;

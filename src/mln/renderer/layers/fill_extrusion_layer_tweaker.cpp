@@ -34,6 +34,12 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
     const auto& crossfade = props.crossfade;
     const auto& state = parameters.state;
 
+#if MLN_RENDER_BACKEND_METAL
+    const bool usesProjectionUBO = state.isGlobeRendering();
+#else
+    constexpr bool usesProjectionUBO = true;
+#endif
+
 #if !defined(NDEBUG)
     const auto label = layerGroup.getName() + "-update-uniforms";
     const auto debugGroup = parameters.encoder->createDebugGroup(label.c_str());
@@ -68,7 +74,7 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
     int i = 0;
     std::vector<FillExtrusionDrawableUBO> drawableUBOVector(layerGroup.getDrawableCount());
     std::vector<FillExtrusionTilePropsUBO> tilePropsUBOVector(layerGroup.getDrawableCount());
-    std::vector<ProjectionUBO> projectionUBOVector(layerGroup.getDrawableCount());
+    std::vector<ProjectionUBO> projectionUBOVector(usesProjectionUBO ? layerGroup.getDrawableCount() : 0);
 #endif
 
     visitLayerGroupDrawables(layerGroup, [&](gfx::Drawable& drawable) {
@@ -88,15 +94,21 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
         const auto anchor = evaluated.get<FillExtrusionTranslateAnchor>();
         constexpr bool inViewportPixelUnits = false; // from RenderTile::translatedMatrix
         constexpr bool nearClipped = true;
-        const auto projection = getProjectionData(
-            tileID, parameters, translation, anchor, nearClipped, inViewportPixelUnits, drawable);
-        const auto& matrix = projection.fallbackMatrix;
+        mat4 matrix;
+        if (usesProjectionUBO) {
+            const auto projection = getProjectionData(
+                tileID, parameters, translation, anchor, nearClipped, inViewportPixelUnits, drawable);
+            matrix = projection.fallbackMatrix;
 #if MLN_UBO_CONSOLIDATION
-        projectionUBOVector[i] = toProjectionUBO(projection);
+            projectionUBOVector[i] = toProjectionUBO(projection);
 #else
-        const auto projectionUBO = toProjectionUBO(projection);
-        drawable.mutableUniformBuffers().createOrUpdate(idProjectionUBO, &projectionUBO, context);
+            const auto projectionUBO = toProjectionUBO(projection);
+            drawable.mutableUniformBuffers().createOrUpdate(idProjectionUBO, &projectionUBO, context);
 #endif
+        } else {
+            matrix = getTileMatrix(
+                tileID, parameters, translation, anchor, nearClipped, inViewportPixelUnits, drawable);
+        }
 
         const auto tileRatio = 1 / tileID.pixelsToTileUnits(1, state.getIntegerZoom());
         const auto zoomScale = state.zoomScale(tileID.canonical.z);
@@ -179,7 +191,12 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
 
     layerUniforms.set(idFillExtrusionDrawableUBO, drawableUniformBuffer);
     layerUniforms.set(idFillExtrusionTilePropsUBO, tilePropsUniformBuffer);
-    uploadProjectionUBOs(layerUniforms, projectionUBOVector, context);
+    if (usesProjectionUBO) {
+        uploadProjectionUBOs(layerUniforms, projectionUBOVector, context);
+    } else {
+        layerUniforms.set(idProjectionUBO, nullptr);
+        projectionUniformBuffer.reset();
+    }
 #endif
 }
 

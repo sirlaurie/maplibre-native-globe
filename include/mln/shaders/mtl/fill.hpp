@@ -180,7 +180,9 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
                                 device const FillDrawableUnionUBO* drawableVector [[buffer(idFillDrawableUBO)]],
                                 device const ProjectionUBO* projectionVector [[buffer(idProjectionUBO)]]) {
 
+#if !defined(HAS_UNIFORM_u_color) || !defined(HAS_UNIFORM_u_opacity)
     device const FillDrawableUBO& drawable = drawableVector[uboIndex].fillDrawableUBO;
+#endif
 
     return {
         .position = projectTile(float2(vertx.position), float2(vertx.position), projectionVector[uboIndex]),
@@ -252,7 +254,9 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
                                 device const FillDrawableUnionUBO* drawableVector [[buffer(idFillDrawableUBO)]],
                                 device const ProjectionUBO* projectionVector [[buffer(idProjectionUBO)]]) {
 
+#if !defined(HAS_UNIFORM_u_outline_color) || !defined(HAS_UNIFORM_u_opacity)
     device const FillOutlineDrawableUBO& drawable = drawableVector[uboIndex].fillOutlineDrawableUBO;
+#endif
 
     const float4 position = projectTile(float2(vertx.position), float2(vertx.position), projectionVector[uboIndex]);
     return {

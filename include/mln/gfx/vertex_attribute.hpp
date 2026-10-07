@@ -3,6 +3,7 @@
 #include <mln/gfx/gfx_types.hpp>
 #include <mln/renderer/paint_property_binder.hpp>
 #include <mln/util/containers.hpp>
+#include <mln/util/monotonic_timer.hpp>
 
 #include <algorithm>
 #include <array>
@@ -183,10 +184,7 @@ public:
     void setDirty(bool value = true) { dirty = value; }
 
     bool isModifiedAfter(std::chrono::duration<double> time) const {
-        if (sharedRawData) {
-            return sharedRawData->isModifiedAfter(time);
-        }
-        return dirty;
+        return dirty || time < lastModified || (sharedRawData && sharedRawData->isModifiedAfter(time));
     }
 
     template <std::size_t I = 0, typename... Tp>
@@ -237,6 +235,11 @@ public:
                           uint32_t vertexOffset,
                           uint32_t stride_,
                           AttributeDataType type) {
+        if (sharedRawData != data || sharedType != type || sharedOffset != offset ||
+            sharedVertexOffset != vertexOffset || sharedStride != stride_) {
+            setDirty();
+            lastModified = util::MonotonicTimer::now();
+        }
         sharedRawData = std::move(data);
         sharedType = type;
         sharedOffset = offset;
@@ -269,6 +272,7 @@ protected:
 
     /// indicates that a value has changed and any cached result should be discarded
     mutable bool dirty = true;
+    std::chrono::duration<double> lastModified = std::chrono::duration<double>::zero();
 
     AttributeDataType dataType;
     std::vector<ElementType> items;
@@ -307,6 +311,10 @@ public:
     /// Returns a pointer to the element on success, or null if the attribute doesn't exists.
     const std::unique_ptr<VertexAttribute>& get(const size_t id) const;
 
+    const std::unique_ptr<VertexAttribute>& getOrCreate(size_t id);
+
+    void remove(size_t id);
+
     /// Set a new attribute element or replace the existing one.
     /// Returns a pointer to the new element on success, or null if the attribute already exists.
     /// The result is valid only until the next non-const method call on this class.
@@ -320,7 +328,8 @@ public:
 
     /// Indicates whether any values have changed
     bool isModifiedAfter(std::chrono::duration<double> time) const {
-        return std::ranges::any_of(attrs, [&](const auto& attr) { return attr && attr->isModifiedAfter(time); });
+        return time < lastModified ||
+               std::ranges::any_of(attrs, [&](const auto& attr) { return attr && attr->isModifiedAfter(time); });
     }
 
     /// Clear the collection
@@ -429,12 +438,15 @@ protected:
             // Apply the property, or add it to the uniforms collection if it's constant.
             if (!isConstant && binder->getVertexCount() > 0) {
                 using Attribute = typename DataDrivenPaintProperty::Attribute;
-                if (const auto& attr = set(dataDrivenAttrId)) {
+                if (const auto& attr = getOrCreate(dataDrivenAttrId)) {
                     binder->template applyPaintProperty<Attribute>(attrIndex, *attr);
                 }
-            } else if (propertiesAsUniforms) {
-                propertiesAsUniforms->first.emplace(attributeName);
-                propertiesAsUniforms->second.emplace(dataDrivenAttrId);
+            } else {
+                remove(dataDrivenAttrId);
+                if (propertiesAsUniforms) {
+                    propertiesAsUniforms->first.emplace(attributeName);
+                    propertiesAsUniforms->second.emplace(dataDrivenAttrId);
+                }
             }
             dataDrivenAttrId++;
         }
@@ -450,6 +462,7 @@ protected:
 
 protected:
     AttributeVector attrs;
+    std::chrono::duration<double> lastModified = std::chrono::duration<double>::zero();
     static const std::unique_ptr<VertexAttribute> nullref;
     static const std::string attributePrefix;
 };

@@ -32,6 +32,7 @@
 #include <mln/map/map.hpp>
 #include <mln/style/image.hpp>
 #include <mln/style/light.hpp>
+#include <mln/style/projection.hpp>
 #include <mln/style/sources/geojson_source.hpp>
 #include <mln/style/sources/image_source.hpp>
 #include <mln/style/sources/raster_dem_source.hpp>
@@ -589,6 +590,35 @@ const MLNExceptionName MLNRedundantSourceIdentifierException =
   auto mbglLight = self.rawStyle->getLight();
   MLNLight *light = [[MLNLight alloc] initWithMBGLLight:mbglLight];
   return light;
+}
+
+// MARK: Projection
+
+- (void)setProjection:(NSExpression *)expression {
+  auto projection = std::make_unique<mln::style::Projection>();
+  if (expression) {
+    const auto error = projection->setProperty(
+        "type", mln::style::conversion::makeConvertible(expression.mgl_jsonExpressionObject));
+    if (error) {
+      [NSException raise:NSInvalidArgumentException
+                  format:@"Invalid projection expression: %@", @(error->message.c_str())];
+    }
+  }
+
+  self.rawStyle->setProjection(std::move(projection));
+}
+
+- (NSExpression *)projection {
+  const auto property = self.rawStyle->getProjection()->getProperty("type");
+  if (property.getKind() == mln::style::StyleProperty::Kind::Undefined) {
+    return nil;
+  }
+
+  id value = MLNJSONObjectFromMBGLValue(property.getValue());
+  if (property.getKind() == mln::style::StyleProperty::Kind::Constant) {
+    return [NSExpression expressionForConstantValue:value];
+  }
+  return [NSExpression expressionWithMLNJSONObject:value];
 }
 
 - (NSString *)description {

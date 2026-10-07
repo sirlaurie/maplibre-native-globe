@@ -3,7 +3,7 @@
 #include <mln/map/camera.hpp>
 #include <mln/map/mode.hpp>
 #include <mln/map/projection_base.hpp>
-#include <mln/style/projection_definition.hpp>
+#include <mln/style/projection.hpp>
 #include <mln/util/camera.hpp>
 #include <mln/util/constants.hpp>
 #include <mln/util/geo.hpp>
@@ -134,7 +134,9 @@ public:
     void setProperties(const TransformStateProperties& properties);
 
     // Projection
+    void setProjection(const Immutable<style::Projection::Impl>&);
     void setProjectionDefinition(const ProjectionDefinition&);
+    void updateProjection(double zoom);
     /// 0 is Mercator, 1 is the globe, in between is the transition.
     double getProjectionTransition() const { return projectionTransition; }
 
@@ -259,6 +261,7 @@ public:
     ScreenCoordinate latLngToScreenCoordinate(const LatLng&, vec4&) const;
     /// Whether the globe hides a location from the camera; a Mercator map hides nothing.
     bool isLocationOccluded(const LatLng&) const;
+    LatLngBounds globeBoundsForScreenBox(const ScreenBox&) const;
     LatLng screenCoordinateToLatLng(const ScreenCoordinate&, LatLng::WrapMode = LatLng::Unwrapped) const;
     // Implements mapbox-gl-js pointCoordinate() : MercatorCoordinate.
     TileCoordinate screenCoordinateToTileCoordinate(const ScreenCoordinate&, uint8_t atZoom) const;
@@ -266,7 +269,7 @@ public:
     double zoomScale(double zoom) const;
     double scaleZoom(double scale) const;
 
-    bool valid() const { return !size.isEmpty() && (scale >= min_scale && scale <= max_scale); }
+    bool valid() const;
 
     float getCameraToTileDistance(const UnwrappedTileID&) const;
     float maxPitchScaleFactor() const;
@@ -289,6 +292,7 @@ public:
 
 private:
     bool rotatedNorth() const;
+    void setProjectionTransition(double);
 
     LatLngBounds bounds;
 
@@ -325,6 +329,7 @@ private:
     const mat4& getInvertedMatrix() const;
 
 private:
+    std::optional<Immutable<style::Projection::Impl>> projectionProperties;
     std::shared_ptr<const ProjectionBase> projection;
     double projectionTransition = 0;
 

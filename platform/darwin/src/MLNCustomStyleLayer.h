@@ -34,6 +34,17 @@ typedef struct MLNStyleLayerDrawingContext {
   MLNMatrix4 projectionMatrix;
   /// A 4×4 matrix representing the map view’s current near clip projection state.
   MLNMatrix4 nearClippedProjectionMatrix;
+  /// Whether the frame includes a globe projection.
+  BOOL globe;
+  /// The globe contribution: 0 is Mercator and 1 is the globe.
+  double projectionTransition;
+  /// A column-major matrix that transforms a unit sphere into clip coordinates.
+  /// The sphere's x axis points to 90° east, y to the north pole, and z to 0° longitude.
+  /// Valid when `globe` is `YES`; the existing projection matrices remain Mercator matrices.
+  MLNMatrix4 globeProjectionMatrix;
+  /// The unit-sphere horizon plane `[x, y, z, w]`.
+  /// A sphere point is behind the horizon when `dot(point, xyz) + w < 0`.
+  double globeClippingPlane[4];
 } MLNStyleLayerDrawingContext;
 
 /// A style layer that is rendered by Metal code that you provide.

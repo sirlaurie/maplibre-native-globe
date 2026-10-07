@@ -240,6 +240,7 @@ void RenderHillshadeLayer::update(gfx::ShaderRegistry& shaders,
         return hillshadePrepareVertexAttrs;
     };
 
+    const bool activatePreparedRenderTargets = activatedRenderTargets.empty();
     for (const RenderTile& tile : *renderTiles) {
         const auto& tileID = tile.getOverscaledTileID();
 
@@ -257,6 +258,10 @@ void RenderHillshadeLayer::update(gfx::ShaderRegistry& shaders,
             removeTile(renderPass, tileID);
         }
         setRenderTileBucketID(tileID, bucket.getID());
+
+        if (bucket.renderTargetPrepared && activatePreparedRenderTargets && bucket.renderTarget) {
+            addRenderTarget(bucket.renderTarget, changes);
+        }
 
         if (!bucket.renderTargetPrepared) {
             // Set up tile render target

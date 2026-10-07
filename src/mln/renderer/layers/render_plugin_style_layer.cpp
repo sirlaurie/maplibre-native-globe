@@ -1,5 +1,7 @@
 #include <mln/renderer/layers/render_plugin_style_layer.hpp>
 
+#include <mln/geometry/feature_index.hpp>
+#include <mln/map/tile_projector.hpp>
 #include <mln/gfx/context.hpp>
 #include <mln/gfx/color_mode.hpp>
 #include <mln/gfx/cull_face_mode.hpp>
@@ -291,7 +293,7 @@ bool RenderPluginStyleLayer::queryIntersectsFeature(const GeometryCoordinates& q
                                                     float zoom,
                                                     const TransformState& transformState,
                                                     float pixelsToTileUnits,
-                                                    const mat4& tileMatrix,
+                                                    const FeatureQueryContext& featureQueryContext,
                                                     const FeatureState& featureState) const {
     const auto& registration = pluginImpl(baseImpl).registration;
     if (!registration->queryFeature) return false;
@@ -321,6 +323,7 @@ bool RenderPluginStyleLayer::queryIntersectsFeature(const GeometryCoordinates& q
     queryContext.pixels_to_tile_units = pixelsToTileUnits;
     queryContext.camera_to_center_distance = transformState.getCameraToCenterDistance();
     queryContext.bearing = transformState.getBearing();
+    const auto& tileMatrix = featureQueryContext.projector.getProjectionData().fallbackMatrix;
     std::copy(tileMatrix.begin(), tileMatrix.end(), queryContext.tile_matrix);
     queryContext.viewport_width = transformState.getSize().width;
     queryContext.viewport_height = transformState.getSize().height;

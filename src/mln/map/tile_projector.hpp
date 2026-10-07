@@ -2,7 +2,11 @@
 
 #include <mln/map/projection_base.hpp>
 #include <mln/map/transform_state.hpp>
+#include <mln/map/vertical_perspective_projection.hpp>
 #include <mln/tile/tile_id.hpp>
+
+#include <cmath>
+#include <numbers>
 
 namespace mln {
 
@@ -21,7 +25,18 @@ public:
         return state->getProjection().projectTilePoint(data, tileID, point, elevation);
     }
 
+    vec4 projectSphere(const Point<double>& tilePoint, const vec3& sphere, double elevation = 0.0) const {
+        return VerticalPerspectiveProjection::projectSphere(data, tilePoint, sphere, elevation);
+    }
+
     double circleRadiusCorrection() const { return state->getProjection().circleRadiusCorrection(*state); }
+
+    double lineThicknessCorrection(double tileY) const {
+        const double mercatorY = data.tileMercatorCoords[1] + data.tileMercatorCoords[3] * tileY;
+        const double thickness = std::cosh(std::numbers::pi * (1.0 - 2.0 * mercatorY));
+        const float transition = static_cast<float>(data.projectionTransition);
+        return transition < 0.999f ? std::lerp(1.0, thickness, transition) : thickness;
+    }
 
     double pitchedTextCorrection(const Point<double>& tileAnchor) const {
         return state->getProjection().pitchedTextCorrection(*state, tileAnchor, tileID);

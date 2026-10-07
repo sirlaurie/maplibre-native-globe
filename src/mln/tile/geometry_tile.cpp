@@ -5,6 +5,7 @@
 #include <mln/style/layers/custom_layer.hpp>
 #include <mln/renderer/layers/render_custom_layer.hpp>
 #include <mln/map/transform_state.hpp>
+#include <mln/map/tile_projector.hpp>
 #include <mln/renderer/buckets/symbol_bucket.hpp>
 #include <mln/renderer/layers/render_background_layer.hpp>
 #include <mln/renderer/layers/render_symbol_layer.hpp>
@@ -518,6 +519,8 @@ float GeometryTile::getQueryPadding(const std::unordered_map<std::string, const 
 
 void GeometryTile::queryRenderedFeatures(std::unordered_map<std::string, std::vector<Feature>>& result,
                                          const GeometryCoordinates& queryGeometry,
+                                         const ScreenLineString& screenGeometry,
+                                         bool intersectsSurface,
                                          const TransformState& transformState,
                                          const std::unordered_map<std::string, const RenderLayer*>& layers,
                                          const RenderedQueryOptions& options,
@@ -530,12 +533,14 @@ void GeometryTile::queryRenderedFeatures(std::unordered_map<std::string, std::ve
 
     const float queryPadding = getQueryPadding(layers);
 
-    const mat4 posMatrix = transformState.getProjectionData(id.toUnwrapped(), projMatrix).mainMatrix;
+    const TileProjector projector(
+        transformState, id.toUnwrapped(), transformState.getProjectionData(id.toUnwrapped(), projMatrix));
+    const FeatureQueryContext queryContext{screenGeometry, projector, intersectsSurface};
 
     layoutResult->featureIndex->query(result,
                                       queryGeometry,
                                       transformState,
-                                      posMatrix,
+                                      queryContext,
                                       util::tileSize_D * id.overscaleFactor(),
                                       std::pow(2, transformState.getZoom() - id.overscaledZ),
                                       options,

@@ -13,8 +13,11 @@ add_library(
     ${PROJECT_SOURCE_DIR}/test/geometry/dem_data.test.cpp
     ${PROJECT_SOURCE_DIR}/test/geometry/line_atlas.test.cpp
     ${PROJECT_SOURCE_DIR}/test/gfx/fill_generator.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/gfx/vertex_attribute.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/layout/symbol_instance.test.cpp
     ${PROJECT_SOURCE_DIR}/test/map/map.test.cpp
     ${PROJECT_SOURCE_DIR}/test/map/prefetch.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/map/render_error.test.cpp
     ${PROJECT_SOURCE_DIR}/test/map/transform.test.cpp
     ${PROJECT_SOURCE_DIR}/test/math/clamp.test.cpp
     ${PROJECT_SOURCE_DIR}/test/math/minmax.test.cpp
@@ -22,6 +25,7 @@ add_library(
     ${PROJECT_SOURCE_DIR}/test/platform/settings.test.cpp
     ${PROJECT_SOURCE_DIR}/test/plugin/plugin.test.cpp
     ${PROJECT_SOURCE_DIR}/test/renderer/feature_tracking.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/renderer/hillshade_render_target.test.cpp
     ${PROJECT_SOURCE_DIR}/test/renderer/image_manager.test.cpp
     ${PROJECT_SOURCE_DIR}/test/renderer/pattern_atlas.test.cpp
     ${PROJECT_SOURCE_DIR}/test/renderer/renderable.test.cpp
@@ -162,6 +166,16 @@ if(MLN_WITH_OPENGL)
     )
 endif()
 
+
+if(MLN_WITH_METAL)
+    target_sources(
+        mbgl-test
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/test/mtl/drawable.test.cpp
+            ${PROJECT_SOURCE_DIR}/test/mtl/shader_program.test.cpp
+            ${PROJECT_SOURCE_DIR}/test/mtl/still_render.test.cpp
+    )
+endif()
 
 if(MLN_WITH_VULKAN)
     target_sources(

@@ -110,7 +110,16 @@ void Transform::jumpTo(const CameraOptions& camera) {
  */
 void Transform::easeTo(const CameraOptions& inputCamera, const AnimationOptions& animation) {
     CameraOptions camera = inputCamera;
-    const bool globe = state.isGlobeRendering();
+    double zoom = camera.zoom.value_or(getZoom());
+    if (!camera.zoom && camera.center && state.isGlobeRendering()) {
+        zoom += VerticalPerspectiveProjection::zoomAdjustment(getLatLng().latitude(),
+                                                              state.constrainedCenter(*camera.center).latitude());
+    }
+    TransformState targetState{state};
+    targetState.updateProjection(zoom);
+    targetState.constrainCameraAndZoomToBounds(camera, zoom);
+    targetState.updateProjection(zoom);
+    const bool globe = state.isGlobeRendering() || targetState.isGlobeRendering();
 
     Duration duration = animation.duration.value_or(Duration::zero());
     if (!globe && state.getLatLngBounds() == LatLngBounds() && !isGestureInProgress() && duration != Duration::zero()) {
@@ -118,13 +127,6 @@ void Transform::easeTo(const CameraOptions& inputCamera, const AnimationOptions&
         flyTo(camera, animation, true);
         return;
     }
-
-    double zoom = camera.zoom.value_or(getZoom());
-    if (!camera.zoom && camera.center && globe) {
-        zoom += VerticalPerspectiveProjection::zoomAdjustment(getLatLng().latitude(),
-                                                              state.constrainedCenter(*camera.center).latitude());
-    }
-    state.constrainCameraAndZoomToBounds(camera, zoom);
 
     const EdgeInsets& padding = camera.padding.value_or(state.getEdgeInsets());
     LatLng startLatLng = getLatLng(LatLng::Unwrapped);
@@ -163,7 +165,7 @@ void Transform::easeTo(const CameraOptions& inputCamera, const AnimationOptions&
     const Point<double> endPoint = Projection::project(latLng, state.getScale());
 
     // Constrain camera options.
-    zoom = util::clamp(zoom, state.getMinZoomAtLatitude(latLng.latitude()), state.getMaxZoom());
+    zoom = util::clamp(zoom, targetState.getMinZoomAtLatitude(latLng.latitude()), state.getMaxZoom());
     pitch = util::clamp(pitch, state.getMinPitch(), state.getMaxPitch());
     fov = util::clamp(fov, state.getMinFieldOfView(), state.getMaxFieldOfView());
 
@@ -260,14 +262,16 @@ void Transform::flyTo(const CameraOptions& inputCamera,
                       const AnimationOptions& animation,
                       bool linearZoomInterpolation) {
     CameraOptions camera = inputCamera;
-    const bool globe = state.isGlobeRendering();
-
     double zoom = camera.zoom.value_or(getZoom());
-    if (!camera.zoom && camera.center && globe) {
+    if (!camera.zoom && camera.center && state.isGlobeRendering()) {
         zoom += VerticalPerspectiveProjection::zoomAdjustment(getLatLng().latitude(),
                                                               state.constrainedCenter(*camera.center).latitude());
     }
-    state.constrainCameraAndZoomToBounds(camera, zoom);
+    TransformState targetState{state};
+    targetState.updateProjection(zoom);
+    targetState.constrainCameraAndZoomToBounds(camera, zoom);
+    targetState.updateProjection(zoom);
+    const bool globe = state.isGlobeRendering() || targetState.isGlobeRendering();
 
     const EdgeInsets& padding = camera.padding.value_or(state.getEdgeInsets());
     const LatLng& latLng = camera.center.value_or(getLatLng(LatLng::Unwrapped)).wrapped();
@@ -294,7 +298,7 @@ void Transform::flyTo(const CameraOptions& inputCamera,
     const Point<double> endPoint = Projection::project(latLng, state.getScale());
 
     // Constrain camera options.
-    zoom = util::clamp(zoom, state.getMinZoomAtLatitude(latLng.latitude()), state.getMaxZoom());
+    zoom = util::clamp(zoom, targetState.getMinZoomAtLatitude(latLng.latitude()), state.getMaxZoom());
     pitch = util::clamp(pitch, state.getMinPitch(), state.getMaxPitch());
     fov = util::clamp(fov, state.getMinFieldOfView(), state.getMaxFieldOfView());
 
@@ -338,14 +342,15 @@ void Transform::flyTo(const CameraOptions& inputCamera,
     double rho = 1.42;
     if (globe) {
         // GL JS: the arc may not dip below the map's or the flight's minimum zoom, and that only ever lowers ρ.
-        const double floorZoom = std::max(animation.minZoom.value_or(state.getMinZoom()), state.getMinZoom());
+        const auto& globeState = targetState.isGlobeRendering() ? targetState : state;
+        const double floorZoom = std::max(animation.minZoom.value_or(globeState.getMinZoom()), globeState.getMinZoom());
         const double normalizedFloorZoom = std::min(
             {floorZoom + VerticalPerspectiveProjection::zoomAdjustment(latLng.latitude(), 0),
              normalizedStartZoom,
              normalizedZoom});
         const double minZoom = util::clamp(
             normalizedFloorZoom + VerticalPerspectiveProjection::zoomAdjustment(0, latLng.latitude()),
-            state.getMinZoomAtLatitude(latLng.latitude()),
+            globeState.getMinZoomAtLatitude(latLng.latitude()),
             state.getMaxZoom());
         const double wMax = w0 / state.zoomScale(minZoom +
                                                  VerticalPerspectiveProjection::zoomAdjustment(latLng.latitude(), 0) -
@@ -619,6 +624,10 @@ double Transform::getFieldOfView() const {
 }
 
 // MARK: - Projection
+
+void Transform::setProjection(const Immutable<style::Projection::Impl>& properties) {
+    state.setProjection(properties);
+}
 
 void Transform::setProjectionDefinition(const ProjectionDefinition& definition) {
     state.setProjectionDefinition(definition);

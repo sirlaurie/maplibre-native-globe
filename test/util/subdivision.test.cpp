@@ -179,6 +179,37 @@ TEST(Subdivision, SplitsOnCellBoundariesAndKeepsArea) {
     expectSoundMesh(result);
 }
 
+TEST(Subdivision, SingleCellConcavePolygonKeepsHoleAndOutline) {
+    const GeometryCollection polygon{
+        {{100, 100}, {1600, 100}, {1600, 600}, {600, 600}, {600, 1600}, {100, 1600}, {100, 100}},
+        {{200, 200}, {200, 400}, {400, 400}, {400, 200}, {200, 200}}};
+
+    const auto result = subdividePolygon(polygon, CanonicalTileID(6, 32, 32), 2);
+
+    EXPECT_DOUBLE_EQ(1210000.0, totalArea(result));
+    for (std::size_t i = 0; i + 2 < result.triangleIndices.size(); i += 3) {
+        EXPECT_LT(signedArea(result.vertices,
+                             result.triangleIndices[i],
+                             result.triangleIndices[i + 1],
+                             result.triangleIndices[i + 2]),
+                  0.0);
+    }
+    ASSERT_EQ(2u, result.lineIndexLists.size());
+    expectSoundMesh(result);
+}
+
+TEST(Subdivision, VertexLimitKeepsHoleAndClosedOutline) {
+    const GeometryCollection polygon{{{0, 0}, {8192, 0}, {8192, 8192}, {0, 8192}, {0, 0}},
+                                     {{2048, 2048}, {2048, 6144}, {6144, 6144}, {6144, 2048}, {2048, 2048}}};
+
+    const auto result = subdividePolygonWithinLimit(polygon, CanonicalTileID(3, 4, 4), 128, true, 85);
+
+    EXPECT_LE(result.vertices.size() / 2, 85u);
+    EXPECT_DOUBLE_EQ(50331648.0, totalArea(result));
+    ASSERT_EQ(2u, result.lineIndexLists.size());
+    expectSoundMesh(result);
+}
+
 TEST(Subdivision, PoleTilesGetPoleQuads) {
     const auto full = square(0, 0, EXTENT, EXTENT);
     const auto north = subdividePolygon(full, CanonicalTileID(1, 0, 0), 2);

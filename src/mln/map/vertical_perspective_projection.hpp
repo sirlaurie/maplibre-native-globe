@@ -36,6 +36,11 @@ public:
     /// The unit-sphere position of a point in tile units.
     static vec3 tileCoordinatesToSphere(const Point<double>& tilePoint, const UnwrappedTileID&);
 
+    static vec4 projectSphere(const ProjectionData&,
+                              const Point<double>& tilePoint,
+                              const vec3& sphere,
+                              double elevation = 0.0);
+
     /// The view-projection matrix that takes unit-sphere positions to clip space.
     static mat4 globeViewProjectionMatrix(const TransformState&, double globeRadiusPixels);
 
@@ -51,8 +56,10 @@ public:
     /// Unit-sphere point under a screen pixel (y up, as `TransformState` takes it); pixels off the globe snap to
     /// the nearest point on the horizon.
     static vec3 screenCoordinateToSurface(const TransformState&, const ScreenCoordinate&);
+    static std::optional<vec3> screenCoordinateToSurfaceIntersection(const TransformState&, const ScreenCoordinate&);
     static LatLng screenCoordinateToLatLng(const TransformState&, const ScreenCoordinate&, LatLng::WrapMode);
     static ScreenCoordinate latLngToScreenCoordinate(const TransformState&, const LatLng&, vec4& clip);
+    static bool isLocationOccluded(const TransformState&, const LatLng&);
 
     /// The center that puts `latLng` under `anchor` with the bearing unchanged, if one exists.
     static std::optional<LatLng> centerForLocationAtPoint(const TransformState&,

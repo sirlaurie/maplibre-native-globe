@@ -4,6 +4,7 @@
 #include <mln/math/angles.hpp>
 #include <mln/math/clamp.hpp>
 #include <mln/math/log2.hpp>
+#include <mln/style/projection_impl.hpp>
 #include <mln/tile/tile_id.hpp>
 #include <mln/util/constants.hpp>
 #include <mln/util/interpolate.hpp>
@@ -12,6 +13,7 @@
 #include <mln/util/tile_coordinate.hpp>
 
 #include <numbers>
+#include <vector>
 
 using namespace std::numbers;
 
@@ -136,8 +138,23 @@ double transitionStateFor(const ProjectionDefinition& definition) {
 
 } // namespace
 
+void TransformState::setProjection(const Immutable<style::Projection::Impl>& properties) {
+    projectionProperties = properties;
+    updateProjection(getZoom());
+}
+
 void TransformState::setProjectionDefinition(const ProjectionDefinition& definition) {
-    const double transition = transitionStateFor(definition);
+    projectionProperties.reset();
+    setProjectionTransition(transitionStateFor(definition));
+}
+
+void TransformState::updateProjection(double zoom) {
+    if (projectionProperties) {
+        setProjectionTransition(transitionStateFor((*projectionProperties)->evaluate(static_cast<float>(zoom))));
+    }
+}
+
+void TransformState::setProjectionTransition(double transition) {
     if (transition == projectionTransition) {
         return;
     }
@@ -881,9 +898,237 @@ bool TransformState::isLocationOccluded(const LatLng& latLng) const {
     if (size.isEmpty() || !isGlobeRendering()) {
         return false;
     }
-    const vec3 surface = VerticalPerspectiveProjection::surfaceVector(latLng);
-    const vec4& plane = getGlobeClippingPlane();
-    return plane[0] * surface[0] + plane[1] * surface[1] + plane[2] * surface[2] + plane[3] < 0.0;
+    return VerticalPerspectiveProjection::isLocationOccluded(*this, latLng);
+}
+
+LatLngBounds TransformState::globeBoundsForScreenBox(const ScreenBox& box) const {
+    if (size.isEmpty()) {
+        return LatLngBounds::empty();
+    }
+
+    const LatLng center = getLatLng(LatLng::Unwrapped);
+    LatLngBounds result = LatLngBounds::empty();
+    std::vector<double> longitudes;
+    bool containsPole = false;
+    const auto extend = [&](LatLng coordinate) {
+        coordinate.unwrapForShortestPath(center);
+        result.extend(coordinate);
+        longitudes.push_back(coordinate.longitude());
+    };
+
+    if (static_cast<float>(getProjectionTransition()) > 0.999f) {
+        const auto dot = [](const vec3& a, const vec3& b) {
+            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        };
+        const auto cross = [](const vec3& a, const vec3& b) -> vec3 {
+            return {{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}};
+        };
+        const auto scaled = [](const vec3& a, double factor) -> vec3 {
+            return {{a[0] * factor, a[1] * factor, a[2] * factor}};
+        };
+        const auto added = [](const vec3& a, const vec3& b) -> vec3 {
+            return {{a[0] + b[0], a[1] + b[1], a[2] + b[2]}};
+        };
+        const mat4& matrix = getGlobeViewProjectionMatrix();
+        const double left = 2.0 * box.min.x / size.width - 1.0;
+        const double right = 2.0 * box.max.x / size.width - 1.0;
+        const double bottom = 2.0 * box.min.y / size.height - 1.0;
+        const double top = 2.0 * box.max.y / size.height - 1.0;
+        std::array<vec4, 6> planes;
+        for (std::size_t i = 0; i < 4; ++i) {
+            planes[0][i] = matrix[i * 4] - left * matrix[i * 4 + 3];
+            planes[1][i] = right * matrix[i * 4 + 3] - matrix[i * 4];
+            planes[2][i] = matrix[i * 4 + 1] - bottom * matrix[i * 4 + 3];
+            planes[3][i] = top * matrix[i * 4 + 3] - matrix[i * 4 + 1];
+            planes[4][i] = matrix[i * 4 + 3];
+        }
+        planes[5] = getGlobeClippingPlane();
+        for (auto& plane : planes) {
+            const double length = std::hypot(plane[0], plane[1], plane[2]);
+            for (double& value : plane) {
+                value /= length;
+            }
+        }
+
+        const auto extendSurface = [&](const vec3& point) {
+            for (const auto& plane : planes) {
+                if (plane[0] * point[0] + plane[1] * point[1] + plane[2] * point[2] + plane[3] < -1e-11) {
+                    return;
+                }
+            }
+            containsPole |= std::abs(point[1]) >= 1.0 - 1e-13;
+            extend(VerticalPerspectiveProjection::surfaceVectorToLatLng(point));
+        };
+        extendSurface({{0, 1, 0}});
+        extendSurface({{0, -1, 0}});
+
+        for (std::size_t i = 0; i < planes.size(); ++i) {
+            const auto& plane = planes[i];
+            if (std::abs(plane[3]) > 1.0 + 1e-11) {
+                continue;
+            }
+            const vec3 normal{{plane[0], plane[1], plane[2]}};
+            const vec3 circleCenter = scaled(normal, -plane[3]);
+            const double radius = std::sqrt(std::max(0.0, 1.0 - plane[3] * plane[3]));
+            vec3 u = cross(normal, std::abs(normal[1]) < 0.9 ? vec3{{0, 1, 0}} : vec3{{1, 0, 0}});
+            u = scaled(u, 1.0 / std::sqrt(dot(u, u)));
+            const vec3 v = cross(normal, u);
+            const auto onCircle = [&](double angle) {
+                extendSurface(added(circleCenter,
+                                    added(scaled(u, radius * std::cos(angle)), scaled(v, radius * std::sin(angle)))));
+            };
+            const double latitudeExtremum = std::atan2(v[1], u[1]);
+            onCircle(latitudeExtremum);
+            onCircle(latitudeExtremum + pi);
+
+            const double a = circleCenter[2] * v[0] - circleCenter[0] * v[2];
+            const double b = circleCenter[0] * u[2] - circleCenter[2] * u[0];
+            const double c = radius * (u[2] * v[0] - u[0] * v[2]);
+            const double amplitude = std::hypot(a, b);
+            if (amplitude > 1e-15 && std::abs(c) <= amplitude + 1e-15) {
+                const double offset = std::acos(std::clamp(-c / amplitude, -1.0, 1.0));
+                const double phase = std::atan2(b, a);
+                onCircle(phase - offset);
+                onCircle(phase + offset);
+            }
+
+            for (std::size_t j = i + 1; j < planes.size(); ++j) {
+                const vec3 other{{planes[j][0], planes[j][1], planes[j][2]}};
+                const vec3 axis = cross(normal, other);
+                const double denominator = dot(axis, axis);
+                if (denominator <= 1e-20) {
+                    continue;
+                }
+                const vec3 origin = scaled(
+                    added(scaled(cross(other, axis), -plane[3]), scaled(cross(axis, normal), -planes[j][3])),
+                    1.0 / denominator);
+                const double distanceSquared = 1.0 - dot(origin, origin);
+                if (distanceSquared >= -1e-11) {
+                    const vec3 offset = scaled(axis, std::sqrt(std::max(0.0, distanceSquared) / denominator));
+                    extendSurface(added(origin, offset));
+                    extendSurface(added(origin, scaled(offset, -1.0)));
+                }
+            }
+        }
+    } else {
+        const auto coordinateAt = [&](const ScreenCoordinate& point) {
+            LatLng coordinate = screenCoordinateToLatLng(point, LatLng::Unwrapped);
+            coordinate.unwrapForShortestPath(center);
+            return coordinate;
+        };
+        const auto extendVisible = [&](const LatLng& coordinate) {
+            const auto projected = latLngToScreenCoordinate(coordinate);
+            if (projected.x >= box.min.x - 1e-6 && projected.x <= box.max.x + 1e-6 && projected.y >= box.min.y - 1e-6 &&
+                projected.y <= box.max.y + 1e-6 && !isLocationOccluded(coordinate)) {
+                extend(coordinate);
+            }
+        };
+        const std::array<ScreenCoordinate, 4> corners{
+            {box.min, {box.max.x, box.min.y}, box.max, {box.min.x, box.max.y}}};
+        for (std::size_t edge = 0; edge < corners.size(); ++edge) {
+            const auto a = corners[edge];
+            const auto b = corners[(edge + 1) % corners.size()];
+            const auto location = [&](double t) {
+                return coordinateAt(a + (b - a) * t);
+            };
+            std::array<LatLng, 9> samples;
+            for (std::size_t i = 0; i < samples.size(); ++i) {
+                samples[i] = location(static_cast<double>(i) / 8.0);
+                extendVisible(samples[i]);
+            }
+            for (bool latitude : {true, false}) {
+                const auto component = [latitude](const LatLng& coordinate) {
+                    return latitude ? coordinate.latitude() : coordinate.longitude();
+                };
+                for (std::size_t i = 1; i + 1 < samples.size(); ++i) {
+                    const double previous = component(samples[i - 1]);
+                    const double current = component(samples[i]);
+                    const double next = component(samples[i + 1]);
+                    const bool maximum = current > previous && current > next;
+                    const bool minimum = current < previous && current < next;
+                    if ((!maximum && !minimum) || (!latitude && std::abs(next - previous) > 180.0)) {
+                        continue;
+                    }
+                    double low = static_cast<double>(i - 1) / 8.0;
+                    double high = static_cast<double>(i + 1) / 8.0;
+                    for (std::size_t iteration = 0; iteration < 36; ++iteration) {
+                        const double left = std::lerp(low, high, 1.0 / 3.0);
+                        const double right = std::lerp(low, high, 2.0 / 3.0);
+                        const double leftValue = component(location(left));
+                        const double rightValue = component(location(right));
+                        if ((leftValue < rightValue) == maximum) {
+                            low = left;
+                        } else {
+                            high = right;
+                        }
+                    }
+                    extendVisible(location((low + high) * 0.5));
+                }
+            }
+        }
+
+        const double left = 2.0 * box.min.x / size.width - 1.0;
+        const double right = 2.0 * box.max.x / size.width - 1.0;
+        const double bottom = 2.0 * box.min.y / size.height - 1.0;
+        const double top = 2.0 * box.max.y / size.height - 1.0;
+        for (double latitude : {-90.0, 90.0}) {
+            const double west = center.longitude() - 180.0;
+            const double east = center.longitude() + 180.0;
+            vec4 start, end;
+            latLngToScreenCoordinate({latitude, west}, start);
+            latLngToScreenCoordinate({latitude, east}, end);
+            const auto distances = [&](const vec4& clip) -> std::array<double, 7> {
+                return {clip[0] - left * clip[3],
+                        right * clip[3] - clip[0],
+                        clip[1] - bottom * clip[3],
+                        top * clip[3] - clip[1],
+                        clip[2],
+                        clip[3] - clip[2],
+                        clip[3]};
+            };
+            const auto first = distances(start);
+            const auto last = distances(end);
+            double low = 0, high = 1;
+            for (std::size_t i = 0; i < first.size(); ++i) {
+                if (first[i] < 0 && last[i] < 0) {
+                    high = -1;
+                    break;
+                }
+                if (first[i] < 0) {
+                    low = std::max(low, first[i] / (first[i] - last[i]));
+                } else if (last[i] < 0) {
+                    high = std::min(high, first[i] / (first[i] - last[i]));
+                }
+            }
+            if (low <= high) {
+                extend({latitude, std::lerp(west, east, low)});
+                extend({latitude, std::lerp(west, east, high)});
+            }
+        }
+    }
+
+    if (result.isEmpty()) {
+        return result;
+    }
+    if (containsPole) {
+        return LatLngBounds::hull({result.south(), -180}, {result.north(), 180});
+    }
+    if (static_cast<float>(getProjectionTransition()) <= 0.999f) {
+        return result;
+    }
+    std::ranges::sort(longitudes);
+    double largestGap = 0;
+    double west = longitudes.front(), east = longitudes.back();
+    for (std::size_t i = 0; i < longitudes.size(); ++i) {
+        const double next = longitudes[(i + 1) % longitudes.size()] + (i + 1 == longitudes.size() ? 360.0 : 0.0);
+        if (next - longitudes[i] > largestGap) {
+            largestGap = next - longitudes[i];
+            west = next;
+            east = longitudes[i] + 360.0;
+        }
+    }
+    const double shift = 360.0 * std::round((center.longitude() - (west + east) * 0.5) / 360.0);
+    return LatLngBounds::hull({result.south(), west + shift}, {result.north(), east + shift});
 }
 
 TileCoordinate TransformState::screenCoordinateToTileCoordinate(const ScreenCoordinate& point, uint8_t atZoom) const {
@@ -894,8 +1139,8 @@ TileCoordinate TransformState::screenCoordinateToTileCoordinate(const ScreenCoor
     if (isGlobeRendering()) {
         const Point<double> p = Projection::project(VerticalPerspectiveProjection::screenCoordinateToLatLng(
                                                         *this, point, LatLng::Unwrapped),
-                                                    scale) /
-                                util::tileSize_D * static_cast<double>(1 << atZoom);
+                                                    zoomScale(atZoom)) /
+                                util::tileSize_D;
         return {.p = {p.x, p.y}, .z = static_cast<double>(atZoom)};
     }
 
@@ -1150,7 +1395,8 @@ void TransformState::moveLatLng(const LatLng& latLng, const ScreenCoordinate& an
 }
 
 void TransformState::setLatLngZoom(const LatLng& latLng, double zoom) {
-    LatLng constrained = bounds.constrain(latLng);
+    updateProjection(zoom);
+    LatLng constrained = constrainedCenter(bounds.constrain(latLng));
     // The globe's tile cover picks each tile's wrap from the center, so a center that jumped a whole world at the
     // antimeridian would re-key every tile; keep it on the copy nearest the current one.
     if (isGlobeRendering() && bounds == LatLngBounds()) {
@@ -1162,6 +1408,7 @@ void TransformState::setLatLngZoom(const LatLng& latLng, double zoom) {
     }
 
     double newScale = util::clamp(zoomScale(zoom), zoomScale(getMinZoomAtLatitude(constrained.latitude())), max_scale);
+    updateProjection(scaleZoom(newScale));
     const double newWorldSize = newScale * util::tileSize_D;
     Bc = newWorldSize / util::DEGREES_MAX;
     Cc = newWorldSize / util::M2PI;
@@ -1192,6 +1439,16 @@ void TransformState::setScalePoint(const double newScale, const ScreenCoordinate
     Bc = Projection::worldSize(scale) / util::DEGREES_MAX;
     Cc = Projection::worldSize(scale) / util::M2PI;
     requestMatricesUpdate = true;
+}
+
+bool TransformState::valid() const {
+    if (size.isEmpty() || scale > max_scale) {
+        return false;
+    }
+    if (!isGlobeRendering()) {
+        return scale >= min_scale;
+    }
+    return getZoom() >= getMinZoomAtLatitude(getLatLng().latitude()) - kEpsilon;
 }
 
 float TransformState::getCameraToTileDistance(const UnwrappedTileID& tileID) const {

@@ -60,6 +60,7 @@ Map::Impl::Impl(RendererFrontend& frontend_,
       fileSource(std::move(fileSource_)),
       style(std::make_unique<style::Style>(fileSource, pixelRatio, frontend_.getThreadPool())),
       annotationManager(*style) {
+    transform.setProjection(style->impl->getProjection()->impl);
     transform.setNorthOrientation(mapOptions.northOrientation());
     style->impl->setObserver(this);
     rendererFrontend.setObserver(*this);
@@ -107,6 +108,7 @@ void Map::Impl::onSourceChanged(style::Source& source) {
 }
 
 void Map::Impl::onUpdate() {
+    transform.setProjection(style->impl->getProjection()->impl);
     // Don't load/render anything in still mode until explicitly requested.
     if (mode != MapMode::Continuous && !stillImageRequest) {
         return;
@@ -115,8 +117,6 @@ void Map::Impl::onUpdate() {
     TimePoint timePoint = mode == MapMode::Continuous ? Clock::now() : Clock::time_point::max();
 
     transform.updateTransitions(timePoint);
-    transform.setProjectionDefinition(
-        style->impl->getProjection()->impl->evaluate(static_cast<float>(transform.getZoom())));
 
     UpdateParameters params = {
         .styleLoaded = style->impl->isLoaded(),
@@ -162,6 +162,7 @@ void Map::Impl::onStyleLoading() {
 }
 
 void Map::Impl::onStyleLoaded() {
+    transform.setProjection(style->impl->getProjection()->impl);
     if (!cameraMutated) {
         jumpTo(style->getDefaultCamera());
     }
@@ -323,9 +324,6 @@ void Map::Impl::onDidFinishRenderingMap() {
 
 void Map::Impl::jumpTo(const CameraOptions& camera) {
     cameraMutated = true;
-    // The style's projection decides how the camera is constrained, so it has to be in place first.
-    transform.setProjectionDefinition(
-        style->impl->getProjection()->impl->evaluate(static_cast<float>(camera.zoom.value_or(transform.getZoom()))));
     transform.jumpTo(camera);
     onUpdate();
 }
@@ -448,6 +446,11 @@ void Map::Impl::onRenderError(std::exception_ptr error) {
 
     if (actionJournal) {
         actionJournal->impl->onRenderError(error);
+    }
+
+    if (mode != MapMode::Continuous && stillImageRequest) {
+        auto request = std::move(stillImageRequest);
+        request->callback(error);
     }
 }
 

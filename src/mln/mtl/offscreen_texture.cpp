@@ -11,11 +11,8 @@ namespace mtl {
 
 class OffscreenTextureResource final : public RenderableResource {
 public:
-    OffscreenTextureResource(Context& context_,
-                             const Size size_,
-                             const gfx::TextureChannelDataType type_,
-                             bool depth,
-                             [[maybe_unused]] bool stencil)
+    OffscreenTextureResource(
+        Context& context_, const Size size_, const gfx::TextureChannelDataType type_, bool depth, bool stencil)
         : context(context_),
           size(size_),
           type(type_) {
@@ -40,19 +37,22 @@ public:
                 ->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite | MTL::TextureUsageRenderTarget);
         }
 
-        // On iOS simulator, the depth target is PixelFormatDepth32Float_Stencil8
-#if !TARGET_OS_SIMULATOR
         if (stencil) {
-            stencilTexture = context.createTexture2D();
-            stencilTexture->setSize(size);
-            stencilTexture->setFormat(gfx::TexturePixelType::Stencil, gfx::TextureChannelDataType::UnsignedByte);
-            stencilTexture->setSamplerConfiguration({.filter = gfx::TextureFilterType::Linear,
-                                                     .wrapU = gfx::TextureWrapType::Clamp,
-                                                     .wrapV = gfx::TextureWrapType::Clamp});
-            static_cast<Texture2D*>(stencilTexture.get())
-                ->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite | MTL::TextureUsageRenderTarget);
-        }
+#if TARGET_OS_SIMULATOR || defined(__x86_64__)
+            stencilTexture = depthTexture;
 #endif
+            if (!stencilTexture) {
+                stencilTexture = context.createTexture2D();
+                stencilTexture->setSize(size);
+                stencilTexture->setFormat(gfx::TexturePixelType::Stencil, gfx::TextureChannelDataType::UnsignedByte);
+                stencilTexture->setSamplerConfiguration({.filter = gfx::TextureFilterType::Linear,
+                                                         .wrapU = gfx::TextureWrapType::Clamp,
+                                                         .wrapV = gfx::TextureWrapType::Clamp});
+                static_cast<Texture2D*>(stencilTexture.get())
+                    ->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite |
+                               MTL::TextureUsageRenderTarget);
+            }
+        }
 
         context.renderingStats().numFrameBuffers++;
     }

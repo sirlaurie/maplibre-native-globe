@@ -113,6 +113,7 @@ void Map::setStyle(std::unique_ptr<Style> style) {
     assert(style);
     impl->onStyleLoading();
     impl->style = std::move(style);
+    impl->transform.setProjection(impl->style->impl->getProjection()->impl);
     if (LayerManager::annotationsEnabled) {
         impl->annotationManager.setStyle(*impl->style);
     }
@@ -299,6 +300,7 @@ CameraOptions cameraForLatLngsOnGlobe(const std::vector<LatLng>& latLngs,
     }
 
     Transform globe(transform.getState());
+    globe.setProjectionDefinition(ProjectionDefinition(ProjectionType::VerticalPerspective));
     globe.jumpTo(CameraOptions().withCenter(fit.center).withZoom(fit.zoom).withPitch(0.0).withRoll(0.0));
     const TransformState& state = globe.getState();
     const mat4& matrix = state.getGlobeViewProjectionMatrix();
@@ -396,6 +398,9 @@ LatLngBounds Map::latLngBoundsForCamera(const CameraOptions& camera) const {
     Size size = shallow.getState().getSize();
 
     shallow.jumpTo(camera);
+    if (shallow.getState().isGlobeRendering()) {
+        return shallow.getState().globeBoundsForScreenBox({{0, 0}, {double(size.width), double(size.height)}});
+    }
     return LatLngBounds::hull(
         shallow.screenCoordinateToLatLng({}),
         shallow.screenCoordinateToLatLng({static_cast<double>(size.width), static_cast<double>(size.height)}));
@@ -406,6 +411,9 @@ LatLngBounds Map::latLngBoundsForCameraUnwrapped(const CameraOptions& camera) co
     Size size = shallow.getState().getSize();
 
     shallow.jumpTo(camera);
+    if (shallow.getState().isGlobeRendering()) {
+        return shallow.getState().globeBoundsForScreenBox({{0, 0}, {double(size.width), double(size.height)}});
+    }
     LatLng nw = shallow.screenCoordinateToLatLng({});
     LatLng se = shallow.screenCoordinateToLatLng({static_cast<double>(size.width), static_cast<double>(size.height)});
     LatLng ne = shallow.screenCoordinateToLatLng({static_cast<double>(size.width), 0.0});

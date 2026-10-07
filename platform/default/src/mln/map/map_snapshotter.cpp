@@ -38,6 +38,8 @@ public:
 
     void onResourceError(std::exception_ptr err) override { delegate.invoke(&RendererObserver::onResourceError, err); }
 
+    void onRenderError(std::exception_ptr error) override { delegate.invoke(&RendererObserver::onRenderError, error); }
+
     void onDidFinishRenderingFrame(RenderMode mode,
                                    bool repaintNeeded,
                                    bool placementChanged,
@@ -79,6 +81,11 @@ public:
     void onResourceError(std::exception_ptr err) override {
         hasPendingStillImageRequest = false;
         rendererObserver->onResourceError(err);
+    }
+
+    void onRenderError(std::exception_ptr error) override {
+        hasPendingStillImageRequest = false;
+        rendererObserver->onRenderError(error);
     }
 
     void onDidFinishRenderingFrame(RenderMode mode, bool repaintNeeded, bool placementChanged) override {

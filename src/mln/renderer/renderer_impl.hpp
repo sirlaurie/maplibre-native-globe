@@ -34,6 +34,7 @@ public:
     void onPostCompileShader(shaders::BuiltIn, gfx::Backend::Type, const std::string&) override;
     void onShaderCompileFailed(shaders::BuiltIn, gfx::Backend::Type, const std::string&) override;
     void onRenderError(std::exception_ptr) override;
+    void onInvalidate() override;
 
 private:
     friend class Renderer;
@@ -48,6 +49,7 @@ private:
     RenderOrchestrator orchestrator;
 
     gfx::RendererBackend& backend;
+    gfx::Context* observedContext = nullptr;
 
     RendererObserver* observer;
 

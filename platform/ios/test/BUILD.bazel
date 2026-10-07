@@ -51,7 +51,7 @@ swift_library(
 ios_unit_test(
     name = "ios_test",
     timeout = "long",
-    minimum_os_version = "15.5",
+    minimum_os_version = "18.0",
     runner = "@rules_apple//apple/testing/default_runner:ios_xctestrun_ordered_runner",
     visibility = [
         "@rules_xcodeproj//xcodeproj:generated",
@@ -71,3 +71,11 @@ ios_unit_test(
 exports_files([
     "Info.plist",
 ])
+
+ios_unit_test(
+    name = "ios_globe_test",
+    timeout = "long",
+    minimum_os_version = "18.0",
+    runner = "@rules_apple//apple/testing/default_runner:ios_xctestrun_ordered_runner",
+    deps = ["//platform/darwin:globe_projection_tests_objcpp_srcs"],
+)

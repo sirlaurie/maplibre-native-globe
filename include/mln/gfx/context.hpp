@@ -71,6 +71,12 @@ public:
 
     virtual void setObserver(ContextObserver* observer_) { observer = observer_ ? observer_ : &nullObserver; }
 
+    void clearObserver(const ContextObserver* expected) {
+        if (observer == expected) {
+            observer = &nullObserver;
+        }
+    }
+
     virtual void beginFrame() = 0;
     virtual void endFrame() = 0;
 

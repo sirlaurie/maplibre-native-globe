@@ -14,6 +14,7 @@ public:
     virtual void onPostCompileShader(shaders::BuiltIn, gfx::Backend::Type, const std::string&) {}
     virtual void onShaderCompileFailed(shaders::BuiltIn, gfx::Backend::Type, const std::string&) {}
     virtual void onRenderError(std::exception_ptr) {}
+    virtual void onInvalidate() {}
 };
 
 } // namespace gfx

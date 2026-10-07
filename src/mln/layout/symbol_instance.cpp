@@ -280,10 +280,14 @@ void SymbolInstance::fail(const std::string& message) const {
 
 bool SymbolInstance::check(std::uint64_t v, int n, const source_location& source) const {
     if (!isFailed && v != checkVal) {
-        fail("SymbolInstance corrupted at " + util::toString(n) + " with value " + util::toString(v) +
-             locationSuffix(source));
+        fail(v, n, source);
     }
     return !isFailed;
+}
+
+void SymbolInstance::fail(std::uint64_t value, int guard, const source_location& source) const {
+    fail("SymbolInstance corrupted at " + util::toString(guard) + " with value " + util::toString(value) +
+         locationSuffix(source));
 }
 
 bool SymbolInstance::checkKey(const source_location& source) const {

@@ -13,7 +13,7 @@ def info_plist(name, base_info_plist, out, **kwargs):
         cp $(location {}) $@
 
         token=\"""" + API_KEY + """\"
-        plutil -replace MLNApiKey -string $$token $@
+        plutil -replace MLNApiKey -string "$$token" "$@"
     """).format(base_info_plist),
         **kwargs
     )

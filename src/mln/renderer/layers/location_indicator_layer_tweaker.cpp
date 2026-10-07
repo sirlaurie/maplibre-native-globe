@@ -22,7 +22,7 @@ void LocationIndicatorLayerTweaker::execute(LayerGroupBase& layerGroup, const Pa
     const auto& state = params.state;
 
     // A "tile" one world pixel wide with its origin at the puck, so the sphere gets the offsets as-is.
-    const double worldSize = Projection::worldSize(state.getScale());
+    const double worldSize = mln::Projection::worldSize(state.getScale());
     const vec4 puckMercatorCoords{
         {positionMercator.x / worldSize, positionMercator.y / worldSize, 1.0 / worldSize, 1.0 / worldSize}};
     const auto projectionFor = [&](const mat4& fallbackMatrix) {

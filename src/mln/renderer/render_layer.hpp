@@ -21,6 +21,7 @@
 namespace mln {
 class Bucket;
 class DynamicFeatureIndex;
+struct FeatureQueryContext;
 class LineAtlas;
 class PropertyEvaluationParameters;
 class PaintParameters;
@@ -148,7 +149,7 @@ public:
                                         const float,
                                         const TransformState&,
                                         const float,
-                                        const mat4&,
+                                        const FeatureQueryContext&,
                                         const FeatureState&) const {
         return false;
     };

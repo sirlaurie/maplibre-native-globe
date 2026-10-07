@@ -177,11 +177,14 @@ void PaintParameters::clearStencil() {
             {.projection = LayerTweaker::toProjectionUBO(projectionDataForTile({0, 0, 0})),
              .stencilRef = 0,
              .tile = CanonicalTileID(0, 0, 0)}};
-        mtlContext.renderGlobeTileClippingMasks(*renderPass, staticData, masks);
+        stencilBufferReady = mtlContext.renderGlobeTileClippingMasks(*renderPass, staticData, masks);
     } else {
         const std::vector<shaders::ClipUBO> tileUBO = {shaders::ClipUBO{
             .matrix = util::cast<float>(matrixForTile({0, 0, 0})), .stencil_ref = 0, .pad1 = 0, .pad2 = 0, .pad3 = 0}};
-        mtlContext.renderTileClippingMasks(*renderPass, staticData, tileUBO);
+        stencilBufferReady = mtlContext.renderTileClippingMasks(*renderPass, staticData, tileUBO);
+    }
+    if (!stencilBufferReady) {
+        return;
     }
     context.renderingStats().stencilClears++;
 #elif MLN_RENDER_BACKEND_VULKAN
@@ -215,6 +218,11 @@ bool PaintParameters::renderTileClippingMasks(const RenderTiles& renderTiles) {
     if (nextStencilID + count > maxStencilValue) {
         clearStencil();
     }
+#if MLN_RENDER_BACKEND_METAL
+    if (!stencilBufferReady) {
+        return false;
+    }
+#endif
     if (!state.isGlobeRendering()) {
         context.releaseGlobeClipMasks();
     }
@@ -307,10 +315,11 @@ bool PaintParameters::renderTileClippingMasks(const RenderTiles& renderTiles) {
 #endif
 
         auto& mtlContext = static_cast<mtl::Context&>(context);
-        if (globe) {
-            mtlContext.renderGlobeTileClippingMasks(*renderPass, staticData, globeMasks);
-        } else {
-            mtlContext.renderTileClippingMasks(*renderPass, staticData, tileUBOs);
+        const bool masksRendered = globe ? mtlContext.renderGlobeTileClippingMasks(*renderPass, staticData, globeMasks)
+                                         : mtlContext.renderTileClippingMasks(*renderPass, staticData, tileUBOs);
+        if (!masksRendered) {
+            tileClippingMaskIDs.clear();
+            return false;
         }
 
         mtlContext.renderingStats().stencilUpdates++;

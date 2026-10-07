@@ -111,3 +111,21 @@ TEST(TileCoordinate, ToGeometryCoordinate) {
         }
     }
 }
+
+TEST(TileCoordinate, GlobeWorldTileCoordinatesAreIndependentOfCameraZoom) {
+    Transform transform;
+    transform.resize({512, 512});
+    transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective"));
+
+    for (const double zoom : {1.0, 3.0}) {
+        SCOPED_TRACE(zoom);
+        transform.jumpTo(CameraOptions().withCenter(LatLng{0, 0}).withZoom(zoom));
+        ASSERT_TRUE(transform.getState().isGlobeRendering());
+
+        const auto coordinate = TileCoordinate::fromScreenCoordinate(transform.getState(), 0, {256, 256});
+
+        EXPECT_DOUBLE_EQ(coordinate.z, 0.0);
+        EXPECT_NEAR(coordinate.p.x, 0.5, 1e-9);
+        EXPECT_NEAR(coordinate.p.y, 0.5, 1e-9);
+    }
+}

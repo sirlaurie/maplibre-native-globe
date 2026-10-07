@@ -120,6 +120,42 @@ bool polygonIntersectsBufferedMultiLine(const GeometryCoordinates& polygon,
     return false;
 }
 
+bool polygonIntersectsBufferedMultiLine(const GeometryCoordinates& polygon,
+                                        const GeometryCollection& multiLine,
+                                        const std::vector<std::vector<float>>& radii) {
+    assert(radii.size() == multiLine.size());
+    for (std::size_t ring = 0; ring < multiLine.size(); ++ring) {
+        const auto& line = multiLine[ring];
+        const auto& lineRadii = radii[ring];
+        assert(lineRadii.size() == line.size());
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            if (polygonIntersectsBufferedPoint(polygon, line[i], lineRadii[i])) {
+                return true;
+            }
+        }
+        if (lineIntersectsLine(polygon, line)) {
+            return true;
+        }
+        for (std::size_t i = 1; i < line.size(); ++i) {
+            const auto start = convertPoint<double>(line[i - 1]);
+            const auto delta = convertPoint<double>(line[i]) - start;
+            const double radius = lineRadii[i - 1];
+            const double radiusDelta = lineRadii[i] - radius;
+            const double a = delta.x * delta.x + delta.y * delta.y - radiusDelta * radiusDelta;
+            for (const auto& point : polygon) {
+                const auto difference = convertPoint<double>(point) - start;
+                const double b = -2.0 * (difference.x * delta.x + difference.y * delta.y + radius * radiusDelta);
+                const double c = difference.x * difference.x + difference.y * difference.y - radius * radius;
+                const double t = a > 0 ? std::clamp(-b / (2.0 * a), 0.0, 1.0) : 0;
+                if (std::min({c, a + b + c, (a * t + b) * t + c}) < 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 bool polygonIntersectsPolygon(const GeometryCoordinates& polygonA, const GeometryCoordinates& polygonB) {
     for (auto& p : polygonA) {
         if (polygonContainsPoint(polygonB, p)) return true;

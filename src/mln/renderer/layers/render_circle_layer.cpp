@@ -6,6 +6,7 @@
 #include <mln/gfx/shader_group.hpp>
 #include <mln/gfx/shader_registry.hpp>
 #include <mln/map/tile_projector.hpp>
+#include <mln/map/vertical_perspective_projection.hpp>
 #include <mln/renderer/buckets/circle_bucket.hpp>
 #include <mln/renderer/layer_group.hpp>
 #include <mln/renderer/layers/circle_layer_tweaker.hpp>
@@ -18,7 +19,9 @@
 #include <mln/style/layers/circle_layer_impl.hpp>
 #include <mln/tile/tile.hpp>
 #include <mln/util/containers.hpp>
+#include <mln/util/geometry_util.hpp>
 #include <mln/util/intersection_tests.hpp>
+#include <mln/util/mat3.hpp>
 #include <mln/util/math.hpp>
 
 namespace mln {
@@ -30,6 +33,227 @@ namespace {
 inline const style::CircleLayer::Impl& impl_cast(const Immutable<style::Layer::Impl>& impl) {
     assert(impl->getTypeInfo() == CircleLayer::Impl::staticTypeInfo());
     return static_cast<const style::CircleLayer::Impl&>(*impl);
+}
+
+Point<double> closestPointToOrigin(const Point<double>& a, const Point<double>& b) {
+    const auto delta = b - a;
+    const double lengthSquared = delta.x * delta.x + delta.y * delta.y;
+    const double t = lengthSquared == 0 ? 0 : std::clamp(-(a.x * delta.x + a.y * delta.y) / lengthSquared, 0.0, 1.0);
+    return a + delta * t;
+}
+
+double lengthSquared(const Point<double>& point) {
+    return point.x * point.x + point.y * point.y;
+}
+
+enum class CircleTriangle {
+    Whole,
+    First,
+    Second
+};
+
+bool circlePlaneIntersectsQuery(const ScreenLineString& query,
+                                const Size& size,
+                                const vec4& center,
+                                const vec4& axisX,
+                                const vec4& axisY,
+                                CircleTriangle triangle = CircleTriangle::Whole) {
+    const auto clipPosition = [&](const Point<double>& point) {
+        vec4 clip;
+        for (std::size_t i = 0; i < clip.size(); ++i) {
+            clip[i] = center[i] + point.x * axisX[i] + point.y * axisY[i];
+        }
+        return clip;
+    };
+    const auto screenPosition = [&](const Point<double>& point) {
+        const auto clip = clipPosition(point);
+        return ScreenCoordinate{(clip[0] / clip[3] + 1.0) * size.width * 0.5,
+                                (1.0 - clip[1] / clip[3]) * size.height * 0.5};
+    };
+    const auto circlePosition = [&](const ScreenCoordinate& point) -> std::optional<Point<double>> {
+        const double x = point.x / size.width * 2.0 - 1.0;
+        const double y = 1.0 - point.y / size.height * 2.0;
+        const double ax = axisX[0] - x * axisX[3];
+        const double ay = axisX[1] - y * axisX[3];
+        const double bx = axisY[0] - x * axisY[3];
+        const double by = axisY[1] - y * axisY[3];
+        const double cx = x * center[3] - center[0];
+        const double cy = y * center[3] - center[1];
+        const double determinant = ax * by - ay * bx;
+        if (std::abs(determinant) < 1e-12) {
+            return std::nullopt;
+        }
+        return Point<double>{(cx * by - cy * bx) / determinant, (ax * cy - ay * cx) / determinant};
+    };
+    const auto visible = [&](const Point<double>& point) {
+        const auto clip = clipPosition(point);
+        return clip[3] > 0 && clip[2] >= 0 && clip[2] <= clip[3];
+    };
+
+    if (query.size() == 1) {
+        const auto point = circlePosition(query.front());
+        return point && lengthSquared(*point) <= 1.0 && visible(*point) &&
+               (triangle != CircleTriangle::First || point->x >= point->y) &&
+               (triangle != CircleTriangle::Second || point->y >= point->x);
+    }
+
+    LinearRing<double> visibleCircle = triangle == CircleTriangle::First ? LinearRing<double>{{-1, -1}, {1, -1}, {1, 1}}
+                                       : triangle == CircleTriangle::Second
+                                           ? LinearRing<double>{{-1, -1}, {1, 1}, {-1, 1}}
+                                           : LinearRing<double>{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    const auto clipPolygon = [&](const auto& distance) {
+        LinearRing<double> clipped;
+        if (visibleCircle.empty()) {
+            return;
+        }
+        auto previous = visibleCircle.back();
+        double previousDistance = distance(clipPosition(previous));
+        for (const auto& point : visibleCircle) {
+            const double currentDistance = distance(clipPosition(point));
+            if ((previousDistance >= 0) != (currentDistance >= 0)) {
+                clipped.push_back(previous +
+                                  (point - previous) * (previousDistance / (previousDistance - currentDistance)));
+            }
+            if (currentDistance >= 0) {
+                clipped.push_back(point);
+            }
+            previous = point;
+            previousDistance = currentDistance;
+        }
+        visibleCircle = std::move(clipped);
+    };
+    clipPolygon([](const vec4& clip) { return clip[3] - 1e-9; });
+    clipPolygon([](const vec4& clip) { return clip[2]; });
+    clipPolygon([](const vec4& clip) { return clip[3] - clip[2]; });
+    if (visibleCircle.size() < 3) {
+        return false;
+    }
+
+    LinearRing<double> screenBoundary;
+    screenBoundary.reserve(visibleCircle.size());
+    Point<double> closest = visibleCircle.front();
+    for (std::size_t i = 0; i < visibleCircle.size(); ++i) {
+        screenBoundary.push_back(screenPosition(visibleCircle[i]));
+        const auto candidate = closestPointToOrigin(visibleCircle[i], visibleCircle[(i + 1) % visibleCircle.size()]);
+        if (lengthSquared(candidate) < lengthSquared(closest)) {
+            closest = candidate;
+        }
+    }
+    if (pointWithinPolygon(Point<double>{0, 0}, Polygon<double>{visibleCircle}, true)) {
+        closest = {0, 0};
+    }
+    if (lengthSquared(closest) > 1.0) {
+        return false;
+    }
+    if (query.size() >= 3 &&
+        pointWithinPolygon(
+            screenPosition(closest), Polygon<double>{LinearRing<double>(query.begin(), query.end())}, true)) {
+        return true;
+    }
+
+    double area = 0;
+    for (std::size_t i = 0; i < screenBoundary.size(); ++i) {
+        const auto& a = screenBoundary[i];
+        const auto& b = screenBoundary[(i + 1) % screenBoundary.size()];
+        area += a.x * b.y - a.y * b.x;
+    }
+    const double winding = area >= 0 ? 1.0 : -1.0;
+    for (std::size_t i = 1; i < query.size(); ++i) {
+        const auto& start = query[i - 1];
+        const auto& end = query[i];
+        double first = 0;
+        double last = 1;
+        for (std::size_t j = 0; j < screenBoundary.size(); ++j) {
+            const auto& a = screenBoundary[j];
+            const auto edge = screenBoundary[(j + 1) % screenBoundary.size()] - a;
+            const double startDistance = winding * (edge.x * (start.y - a.y) - edge.y * (start.x - a.x));
+            const double endDistance = winding * (edge.x * (end.y - a.y) - edge.y * (end.x - a.x));
+            if (startDistance < 0 && endDistance < 0) {
+                first = 1;
+                last = 0;
+                break;
+            }
+            if ((startDistance >= 0) != (endDistance >= 0)) {
+                const double t = startDistance / (startDistance - endDistance);
+                if (startDistance < 0) {
+                    first = std::max(first, t);
+                } else {
+                    last = std::min(last, t);
+                }
+            }
+        }
+        if (first <= last) {
+            const auto a = circlePosition(start + (end - start) * first);
+            const auto b = circlePosition(start + (end - start) * last);
+            if (a && b && lengthSquared(closestPointToOrigin(*a, *b)) <= 1.0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool globeCircleIntersectsQuery(const FeatureQueryContext& query,
+                                const GeometryCoordinate& point,
+                                double radius,
+                                double pixelsToTileUnits,
+                                const std::array<float, 2>& translation,
+                                TranslateAnchorType translationAnchor,
+                                bool pitchWithMap,
+                                bool scaleWithMap) {
+    const auto& projector = query.projector;
+    const auto& state = projector.getTransformState();
+    const auto& tileID = projector.getTileID();
+    const auto tileTranslation = RenderTile::tileUnitTranslation(tileID, translation, translationAnchor, state);
+    const Point<double> translated{point.x + tileTranslation[0], point.y + tileTranslation[1]};
+    const auto sphere = VerticalPerspectiveProjection::tileCoordinatesToSphere(translated, tileID);
+    vec4 center = projector.projectSphere(translated, sphere);
+    vec4 axisX{};
+    vec4 axisY{};
+    const double cameraDistance = state.getCameraToCenterDistance();
+
+    if (!pitchWithMap) {
+        if (center[3] <= 0 || center[2] > center[3]) {
+            return false;
+        }
+        const double clipRadius = radius * (scaleWithMap ? cameraDistance : center[3]);
+        axisX[0] = clipRadius * 2.0 / state.getSize().width;
+        axisY[1] = clipRadius * 2.0 / state.getSize().height;
+    } else {
+        const double scale = scaleWithMap ? 1.0 : center[3] / cameraDistance;
+        const double tileRadius = radius * pixelsToTileUnits * scale;
+        const double angle = tileRadius / (util::EXTENT * static_cast<double>(1ull << tileID.canonical.z)) *
+                             util::M2PI * projector.circleRadiusCorrection();
+        const vec3 right = vec3Normalize({sphere[2], 0, -sphere[0]});
+        const vec3 up = vec3Normalize(vec3Cross(right, sphere));
+        const double tangent = std::tan(angle);
+        const auto corner = [&](double x, double y) {
+            const auto rotated = vec3Normalize(
+                vec3Add(sphere, vec3Add(vec3Scale(right, x * tangent), vec3Scale(up, y * tangent))));
+            return projector.projectSphere({translated.x + x * tileRadius, translated.y + y * tileRadius}, rotated);
+        };
+        const auto a = corner(-1, -1);
+        const auto b = corner(1, -1);
+        const auto c = corner(1, 1);
+        const auto d = corner(-1, 1);
+        for (std::size_t i = 0; i < center.size(); ++i) {
+            center[i] = (a[i] + b[i] + c[i] + d[i]) * 0.25;
+            axisX[i] = (-a[i] + b[i] + c[i] - d[i]) * 0.25;
+            axisY[i] = (-a[i] - b[i] + c[i] + d[i]) * 0.25;
+        }
+        center[2] = (a[2] + c[2]) * 0.5;
+        axisX[2] = (b[2] - a[2]) * 0.5;
+        axisY[2] = (c[2] - b[2]) * 0.5;
+        if (circlePlaneIntersectsQuery(
+                query.screenGeometry, state.getSize(), center, axisX, axisY, CircleTriangle::First)) {
+            return true;
+        }
+        axisX[2] = (c[2] - d[2]) * 0.5;
+        axisY[2] = (d[2] - a[2]) * 0.5;
+        return circlePlaneIntersectsQuery(
+            query.screenGeometry, state.getSize(), center, axisX, axisY, CircleTriangle::Second);
+    }
+    return circlePlaneIntersectsQuery(query.screenGeometry, state.getSize(), center, axisX, axisY);
 }
 
 } // namespace
@@ -98,8 +322,9 @@ bool RenderCircleLayer::queryIntersectsFeature(const GeometryCoordinates& queryG
                                                const float zoom,
                                                const TransformState& transformState,
                                                const float pixelsToTileUnits,
-                                               const mat4& posMatrix,
+                                               const FeatureQueryContext& queryContext,
                                                const FeatureState& featureState) const {
+    const mat4& posMatrix = queryContext.projector.getProjectionData().fallbackMatrix;
     const auto& evaluated = static_cast<const CircleLayerProperties&>(*evaluatedProperties).evaluated;
     // Translate query geometry
     const GeometryCoordinates& translatedQueryGeometry = FeatureIndex::translateQueryGeometry(
@@ -114,6 +339,30 @@ bool RenderCircleLayer::queryIntersectsFeature(const GeometryCoordinates& queryG
     auto radius = evaluated.evaluate<style::CircleRadius>(zoom, feature, featureState);
     auto stroke = evaluated.evaluate<style::CircleStrokeWidth>(zoom, feature, featureState);
     auto size = radius + stroke;
+
+    if (transformState.isGlobeRendering()) {
+        if (size <= 0) {
+            return false;
+        }
+        const bool pitchWithMap = evaluated.evaluate<style::CirclePitchAlignment>(zoom, feature) == AlignmentType::Map;
+        const bool scaleWithMap = evaluated.evaluate<style::CirclePitchScale>(zoom, feature) ==
+                                  CirclePitchScaleType::Map;
+        for (const auto& ring : feature.getGeometries()) {
+            for (const auto& point : ring) {
+                if (globeCircleIntersectsQuery(queryContext,
+                                               point,
+                                               size,
+                                               pixelsToTileUnits,
+                                               evaluated.get<style::CircleTranslate>(),
+                                               evaluated.get<style::CircleTranslateAnchor>(),
+                                               pitchWithMap,
+                                               scaleWithMap)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     // For pitch-alignment: map, compare feature geometry to query geometry in
     // the plane of the tile Otherwise, compare geometry in the plane of the

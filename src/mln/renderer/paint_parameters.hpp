@@ -97,6 +97,9 @@ public:
 
     // Stencil handling
 public:
+#if MLN_RENDER_BACKEND_METAL
+    bool stencilBufferReady = true;
+#endif
 #if MLN_RENDER_BACKEND_OPENGL
     /// Update cached stencil availability for the currently bound GL framebuffer.
     void updateStencilBufferAvailability();

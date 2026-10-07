@@ -7,6 +7,7 @@
 #include <mln/map/map.hpp>
 #include <mln/map/map_options.hpp>
 #include <mln/map/mode.hpp>
+#include <mln/map/transform.hpp>
 #include <mln/math/wrap.hpp>
 #if MLN_RENDER_BACKEND_METAL
 #include <mln/mtl/mtl_fwd.hpp>
@@ -2180,6 +2181,19 @@ public:
 }
 
 - (BOOL)_shouldChangeFromCamera:(nonnull MLNMapCamera *)oldCamera
+                    toZoomLevel:(double)zoom
+              aroundAnchorPoint:(CGPoint)anchorPoint {
+  if (![self.delegate respondsToSelector:@selector(mapView:
+                                             shouldChangeFromCamera:toCamera:reason:)] &&
+      ![self.delegate respondsToSelector:@selector(mapView:shouldChangeFromCamera:toCamera:)]) {
+    return YES;
+  }
+
+  MLNMapCamera *newCamera = [self cameraByZoomingToZoomLevel:zoom aroundAnchorPoint:anchorPoint];
+  return [self _shouldChangeFromCamera:oldCamera toCamera:newCamera];
+}
+
+- (BOOL)_shouldChangeFromCamera:(nonnull MLNMapCamera *)oldCamera
                        toCamera:(nonnull MLNMapCamera *)newCamera {
   // Check delegates first
   if ([self.delegate respondsToSelector:@selector(mapView:
@@ -2290,11 +2304,9 @@ public:
     CGFloat newScale = self.scale * pinch.scale;
     double newZoom = log2(newScale);
 
-    // Calculates the final camera zoom, has no effect within current map camera.
-    MLNMapCamera *toCamera = [self cameraByZoomingToZoomLevel:newZoom
-                                            aroundAnchorPoint:centerPoint];
-
-    if ([self _shouldChangeFromCamera:oldCamera toCamera:toCamera]) {
+    if ([self _shouldChangeFromCamera:oldCamera
+                          toZoomLevel:newZoom
+                    aroundAnchorPoint:centerPoint]) {
       self.mbglMap.jumpTo(mln::CameraOptions().withZoom(newZoom).withAnchor(
           mln::ScreenCoordinate{centerPoint.x, centerPoint.y}));
 
@@ -2336,11 +2348,9 @@ public:
 
     BOOL drift = velocity && duration;
 
-    // Calculates the final camera zoom, this has no effect within current map camera.
     double zoom = log2(newScale);
-    MLNMapCamera *toCamera = [self cameraByZoomingToZoomLevel:zoom aroundAnchorPoint:centerPoint];
 
-    if (![self _shouldChangeFromCamera:oldCamera toCamera:toCamera]) {
+    if (![self _shouldChangeFromCamera:oldCamera toZoomLevel:zoom aroundAnchorPoint:centerPoint]) {
       drift = NO;
     } else {
       if (drift) {
@@ -2568,9 +2578,7 @@ public:
 
   CGPoint gesturePoint = [self anchorPointForGesture:doubleTap];
 
-  MLNMapCamera *toCamera = [self cameraByZoomingToZoomLevel:newZoom aroundAnchorPoint:gesturePoint];
-
-  if ([self _shouldChangeFromCamera:oldCamera toCamera:toCamera]) {
+  if ([self _shouldChangeFromCamera:oldCamera toZoomLevel:newZoom aroundAnchorPoint:gesturePoint]) {
     mln::ScreenCoordinate center(gesturePoint.x, gesturePoint.y);
     self.mbglMap.easeTo(mln::CameraOptions().withZoom(newZoom).withAnchor(center),
                         MLNDurationFromTimeInterval(MLNAnimationDuration));
@@ -2603,9 +2611,7 @@ public:
 
   CGPoint gesturePoint = [self anchorPointForGesture:twoFingerTap];
 
-  MLNMapCamera *toCamera = [self cameraByZoomingToZoomLevel:newZoom aroundAnchorPoint:gesturePoint];
-
-  if ([self _shouldChangeFromCamera:oldCamera toCamera:toCamera]) {
+  if ([self _shouldChangeFromCamera:oldCamera toZoomLevel:newZoom aroundAnchorPoint:gesturePoint]) {
     mln::ScreenCoordinate center(gesturePoint.x, gesturePoint.y);
     self.mbglMap.easeTo(mln::CameraOptions().withZoom(newZoom).withAnchor(center),
                         MLNDurationFromTimeInterval(MLNAnimationDuration));
@@ -2644,10 +2650,10 @@ public:
     CGPoint centerPoint = [self anchorPointForGesture:quickZoom];
 
     MLNMapCamera *oldCamera = self.camera;
-    MLNMapCamera *toCamera = [self cameraByZoomingToZoomLevel:newZoom
-                                            aroundAnchorPoint:centerPoint];
 
-    if ([self _shouldChangeFromCamera:oldCamera toCamera:toCamera]) {
+    if ([self _shouldChangeFromCamera:oldCamera
+                          toZoomLevel:newZoom
+                    aroundAnchorPoint:centerPoint]) {
       self.mbglMap.jumpTo(mln::CameraOptions().withZoom(newZoom).withAnchor(
           mln::ScreenCoordinate{centerPoint.x, centerPoint.y}));
     }
@@ -2741,17 +2747,11 @@ public:
 }
 
 - (MLNMapCamera *)cameraByZoomingToZoomLevel:(double)zoom aroundAnchorPoint:(CGPoint)anchorPoint {
-  mln::ScreenCoordinate anchor = mln::ScreenCoordinate{anchorPoint.x, anchorPoint.y};
-  mln::EdgeInsets padding =
-      mln::EdgeInsets(anchor.y, anchor.x, self.size.height - anchor.y, self.size.width - anchor.x);
-  mln::CameraOptions currentCameraOptions = self.mbglMap.getCameraOptions(padding);
+  mln::Transform transform{self.mbglMap.getTransformState()};
+  transform.jumpTo(mln::CameraOptions().withZoom(zoom).withAnchor(
+      mln::ScreenCoordinate{anchorPoint.x, anchorPoint.y}));
 
-  currentCameraOptions.zoom = mln::util::clamp(zoom, self.minimumZoomLevel, self.maximumZoomLevel);
-  currentCameraOptions.anchor = anchor;
-  MLNCoordinateBounds bounds =
-      MLNCoordinateBoundsFromLatLngBounds(self.mbglMap.latLngBoundsForCamera(currentCameraOptions));
-
-  return [self cameraThatFitsCoordinateBounds:bounds];
+  return [self cameraForCameraOptions:transform.getCameraOptions(std::nullopt)];
 }
 
 - (MLNMapCamera *)cameraByRotatingToDirection:(CLLocationDirection)degrees
@@ -4644,6 +4644,14 @@ static void *windowScreenContext = &windowScreenContext;
 /// Converts a rectangle in the given view’s coordinate system to a geographic
 /// bounding box.
 - (mln::LatLngBounds)convertRect:(CGRect)rect toLatLngBoundsFromView:(nullable UIView *)view {
+  const auto state = self.mbglMap.getTransformState();
+  if (state.isGlobeRendering()) {
+    const CGRect viewportRect = [self convertRect:rect fromView:view];
+    return state.globeBoundsForScreenBox(
+        {{CGRectGetMinX(viewportRect), state.getSize().height - CGRectGetMaxY(viewportRect)},
+         {CGRectGetMaxX(viewportRect), state.getSize().height - CGRectGetMinY(viewportRect)}});
+  }
+
   auto bounds = mln::LatLngBounds::empty();
   auto topLeft = [self convertPoint:{CGRectGetMinX(rect), CGRectGetMinY(rect)}
                    toLatLngFromView:view];
@@ -6757,7 +6765,8 @@ static void *windowScreenContext = &windowScreenContext;
 }
 
 - (BOOL)isRotationAllowed {
-  return (self.zoomLevel >= self.currentMinimumZoom);
+  return self.mbglMap.getTransformState().isGlobeRendering() ||
+         self.zoomLevel >= self.currentMinimumZoom;
 }
 
 - (void)unrotateIfNeededForGesture {

@@ -4,6 +4,7 @@
 
 #include <mln/util/logging.hpp>
 
+#include <cstdlib>
 #include <vector>
 
 #define EXPORT __attribute__((visibility("default")))
@@ -11,7 +12,10 @@
 EXPORT
 bool TestRunner::startTest(const std::string& manifestBasePath) {
     auto runTestWithManifest = [](const std::string& manifest) -> bool {
-        std::vector<std::string> arguments = {"mbgl-render-test-runner", "-p", manifest, "-u", "rebaseline"};
+        std::vector<std::string> arguments = {"mbgl-render-test-runner", "-p", manifest};
+        if (const char* filter = std::getenv("MLN_RENDER_TEST_FILTER"); filter && *filter) {
+            arguments.insert(arguments.end(), {"-f", filter});
+        }
         std::vector<char*> argv;
         for (const auto& arg : arguments) {
             argv.push_back(const_cast<char*>(arg.data()));

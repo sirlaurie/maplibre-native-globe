@@ -53,6 +53,8 @@ void Tile::dumpDebugLogs() const {
 
 void Tile::queryRenderedFeatures(std::unordered_map<std::string, std::vector<Feature>>&,
                                  const GeometryCoordinates&,
+                                 const ScreenLineString&,
+                                 bool,
                                  const TransformState&,
                                  const std::unordered_map<std::string, const RenderLayer*>&,
                                  const RenderedQueryOptions&,

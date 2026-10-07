@@ -43,9 +43,18 @@ constexpr uint32_t maximumVertexBindingCount = 31;
 
 Context::Context(RendererBackend& backend_)
     : gfx::Context(mtl::maximumVertexBindingCount),
-      backend(backend_) {}
+      backend(backend_),
+      compilationWakeState(std::make_shared<CompilationWakeState>()),
+      compilationFinishedTask([this] { observer->onInvalidate(); }) {
+    compilationWakeState->task = &compilationFinishedTask;
+}
 
 Context::~Context() noexcept {
+    {
+        const std::lock_guard lock(compilationWakeState->mutex);
+        compilationWakeState->task = nullptr;
+    }
+
     if (cleanupOnDestruction) {
         backend.getThreadPool().runRenderJobs(true /* closeQueue */);
         performCleanup();
@@ -75,10 +84,38 @@ Context::~Context() noexcept {
 }
 
 void Context::beginFrame() {
+    renderingDeferred = false;
+    renderingFailed = false;
     backend.getThreadPool().runRenderJobs();
 }
 
 void Context::endFrame() {}
+
+std::function<void()> Context::shaderCompilationCallback() const {
+    return [state = compilationWakeState] {
+        const std::lock_guard lock(state->mutex);
+        if (state->task) {
+            state->task->send();
+        }
+    };
+}
+
+void Context::shaderCompilationFinished(shaders::BuiltIn shaderID,
+                                        const std::string& defines,
+                                        std::exception_ptr error) {
+    if (error) {
+        observer->onShaderCompileFailed(shaderID, gfx::Backend::Type::Metal, defines);
+    } else {
+        observer->onPostCompileShader(shaderID, gfx::Backend::Type::Metal, defines);
+    }
+}
+
+void Context::reportRenderError(std::exception_ptr error) {
+    if (!renderingFailed) {
+        renderingFailed = true;
+        observer->onRenderError(error);
+    }
+}
 
 std::unique_ptr<gfx::CommandEncoder> Context::createCommandEncoder() {
     return std::make_unique<CommandEncoder>(*this);
@@ -145,48 +182,47 @@ UniqueShaderProgram Context::createProgram(shaders::BuiltIn shaderID,
     // requires a check for iOS 16+
     // options->setOptimizationLevel(MTL::LibraryOptimizationLevelDefault);
 
-    NS::Error* error = nullptr;
     NS::String* nsSource = NS::String::string(
         source.data(), NS::UTF8StringEncoding); // NOLINT(bugprone-suspicious-stringview-data-usage)
 
-    const auto& device = backend.getDevice();
-    auto library = NS::TransferPtr(device->newLibrary(nsSource, options.get(), &error));
-    if (!library || error) {
-        const auto errPtr = error ? error->localizedDescription()->utf8String() : nullptr;
-        const auto errStr = (errPtr && errPtr[0]) ? ": " + std::string(errPtr) : std::string();
-        Log::Error(Event::Shader, name + " compile failed" + errStr);
-        observer->onShaderCompileFailed(shaderID, gfx::Backend::Type::Metal, defineStr);
-        assert(false);
-        return nullptr;
-    }
+    auto promise = std::make_shared<std::promise<ShaderProgram::Functions>>();
+    auto shader = std::make_unique<ShaderProgram>(name, backend, promise->get_future(), shaderID, defineStr);
+    auto completion = [promise,
+                       wake = shaderCompilationCallback(),
+                       name = std::move(name),
+                       vertexName = std::string(vertexName),
+                       fragmentName = std::string(fragmentName)](MTL::Library* library, NS::Error* error) {
+        const auto completionPool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+        try {
+            if (!library) {
+                const auto* description = error ? error->localizedDescription()->utf8String() : nullptr;
+                throw std::runtime_error(name + " compile failed" +
+                                         (description ? ": " + std::string(description) : std::string()));
+            }
 
-    const auto nsVertName = NS::String::string(
-        vertexName.data(), NS::UTF8StringEncoding); // NOLINT(bugprone-suspicious-stringview-data-usage)
-    MTLFunctionPtr vertexFunction = NS::TransferPtr(library->newFunction(nsVertName));
-    if (!vertexFunction) {
-        Log::Error(Event::Shader, name + " missing vertex function " + vertexName.data());
-        observer->onShaderCompileFailed(shaderID, gfx::Backend::Type::Metal, defineStr);
-        assert(false);
-        return nullptr;
-    }
+            ShaderProgram::Functions functions;
+            functions.vertex = NS::TransferPtr(
+                library->newFunction(NS::String::string(vertexName.c_str(), NS::UTF8StringEncoding)));
+            if (!functions.vertex) {
+                throw std::runtime_error(name + " missing vertex function " + vertexName);
+            }
 
-    // fragment function is optional
-    MTLFunctionPtr fragmentFunction;
-    if (!fragmentName.empty()) {
-        const auto nsFragName = NS::String::string(
-            fragmentName.data(), NS::UTF8StringEncoding); // NOLINT(bugprone-suspicious-stringview-data-usage)
-        fragmentFunction = NS::TransferPtr(library->newFunction(nsFragName));
-        if (!fragmentFunction) {
-            Log::Error(Event::Shader, name + " missing fragment function " + fragmentName.data());
-            observer->onShaderCompileFailed(shaderID, gfx::Backend::Type::Metal, defineStr);
-            assert(false);
-            return nullptr;
+            if (!fragmentName.empty()) {
+                functions.fragment = NS::TransferPtr(
+                    library->newFunction(NS::String::string(fragmentName.c_str(), NS::UTF8StringEncoding)));
+                if (!functions.fragment) {
+                    throw std::runtime_error(name + " missing fragment function " + fragmentName);
+                }
+            }
+            promise->set_value(std::move(functions));
+        } catch (...) {
+            promise->set_exception(std::current_exception());
         }
-    }
+        wake();
+    };
 
-    auto shader = std::make_unique<ShaderProgram>(
-        std::move(name), backend, std::move(vertexFunction), std::move(fragmentFunction));
-    observer->onPostCompileShader(shaderID, gfx::Backend::Type::Metal, defineStr);
+    const auto& device = backend.getDevice();
+    device->newLibrary(nsSource, options.get(), MTL::NewLibraryCompletionHandlerFunction(std::move(completion)));
 
     return shader;
 }
@@ -422,7 +458,6 @@ bool Context::renderTileClippingMasks(gfx::RenderPass& renderPass,
     if (clipMaskPipelineState) {
         mtlRenderPass.setRenderPipelineState(clipMaskPipelineState);
     } else {
-        assert(!"Failed to create render pipeline state for clip masking");
         return false;
     }
 
@@ -503,7 +538,6 @@ bool Context::renderGlobeTileClippingMasks(gfx::RenderPass& renderPass,
     if (globeClipMaskPipelineState) {
         mtlRenderPass.setRenderPipelineState(globeClipMaskPipelineState);
     } else {
-        assert(!"Failed to create render pipeline state for globe clip masking");
         return false;
     }
 

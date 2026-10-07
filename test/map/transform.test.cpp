@@ -8,11 +8,15 @@
 #include <mln/map/transform.hpp>
 #include <mln/map/vertical_perspective_projection.hpp>
 #include <mln/math/angles.hpp>
+#include <mln/style/projection.hpp>
 #include <mln/util/geo.hpp>
 #include <mln/util/projection.hpp>
 #include <mln/util/quaternion.hpp>
 
 #include <numbers>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 
 using namespace std::numbers;
 using namespace mln;
@@ -1549,6 +1553,107 @@ TEST(GlobeTransform, MoveByPutsTheDraggedPointAtTheCenter) {
     }
 }
 
+namespace {
+
+struct AnchorZoomSweep {
+    const char* name;
+    const char* projection;
+    double start;
+    double finish;
+    double pitch;
+};
+
+class AnchoredZoomContinuity : public testing::TestWithParam<AnchorZoomSweep> {};
+
+} // namespace
+
+TEST_P(AnchoredZoomContinuity, KeepsTheGroundLocationAtTheFixedScreenAnchor) {
+    const auto& sweep = GetParam();
+    style::Projection projection;
+    projection.setType(ProjectionDefinition(sweep.projection));
+    Transform transform;
+    transform.resize({390, 844});
+    transform.setProjection(projection.impl);
+    transform.jumpTo(CameraOptions()
+                         .withCenter(LatLng{-33.92, 151.22})
+                         .withZoom(sweep.start)
+                         .withBearing(33.0)
+                         .withPitch(sweep.pitch));
+    transform.setGestureInProgress(true);
+    const ScreenCoordinate anchor{125.0, 300.0};
+    const LatLng originalLocation = transform.screenCoordinateToLatLng(anchor, LatLng::Unwrapped);
+    constexpr int steps = 64;
+    constexpr double pixelTolerance = 0.25;
+    double largestLocalError = 0.0;
+    double largestOriginalError = 0.0;
+    std::string worstLocalStep;
+    std::string worstOriginalStep;
+    std::ostringstream samples;
+    samples << std::setprecision(17)
+            << "step,requested_zoom,before_zoom,before_transition,before_lat,before_lng,after_zoom,after_transition,"
+               "after_lat,after_lng,anchor_lat,anchor_lng,inverse_error,local_dx,local_dy,original_dx,original_dy\n";
+    for (int step = 1; step <= steps; ++step) {
+        const double requestedZoom = sweep.start + (sweep.finish - sweep.start) * step / steps;
+        const auto beforeCenter = transform.getLatLng(LatLng::Unwrapped);
+        const double beforeZoom = transform.getZoom();
+        const double beforeTransition = transform.getState().getProjectionTransition();
+        const auto localLocation = transform.screenCoordinateToLatLng(anchor, LatLng::Unwrapped);
+        const auto inversePoint = transform.latLngToScreenCoordinate(localLocation);
+        const double inverseError = std::hypot(inversePoint.x - anchor.x, inversePoint.y - anchor.y);
+        transform.jumpTo(CameraOptions().withZoom(requestedZoom).withAnchor(anchor));
+        const auto afterCenter = transform.getLatLng(LatLng::Unwrapped);
+        const auto localPoint = transform.latLngToScreenCoordinate(localLocation);
+        const auto originalPoint = transform.latLngToScreenCoordinate(originalLocation);
+        const double localError = std::hypot(localPoint.x - anchor.x, localPoint.y - anchor.y);
+        const double originalError = std::hypot(originalPoint.x - anchor.x, originalPoint.y - anchor.y);
+        std::ostringstream sample;
+        sample << std::setprecision(17) << step << ',' << requestedZoom << ',' << beforeZoom << ',' << beforeTransition
+               << ',' << beforeCenter.latitude() << ',' << beforeCenter.longitude() << ',' << transform.getZoom() << ','
+               << transform.getState().getProjectionTransition() << ',' << afterCenter.latitude() << ','
+               << afterCenter.longitude() << ',' << localLocation.latitude() << ',' << localLocation.longitude() << ','
+               << inverseError << ',' << localPoint.x - anchor.x << ',' << localPoint.y - anchor.y << ','
+               << originalPoint.x - anchor.x << ',' << originalPoint.y - anchor.y;
+        samples << sample.str() << '\n';
+        if (!std::isfinite(localError) || localError > largestLocalError) {
+            largestLocalError = std::isfinite(localError) ? localError : std::numeric_limits<double>::infinity();
+            worstLocalStep = sample.str();
+        }
+        if (!std::isfinite(originalError) || originalError > largestOriginalError) {
+            largestOriginalError = std::isfinite(originalError) ? originalError
+                                                                : std::numeric_limits<double>::infinity();
+            worstOriginalStep = sample.str();
+        }
+    }
+    RecordProperty("projection", sweep.projection);
+    RecordProperty("pitch", std::to_string(sweep.pitch));
+    RecordProperty("largest_local_error_pixels", std::to_string(largestLocalError));
+    RecordProperty("largest_original_error_pixels", std::to_string(largestOriginalError));
+    EXPECT_LE(largestLocalError, pixelTolerance) << worstLocalStep;
+    EXPECT_LE(largestOriginalError, pixelTolerance) << worstOriginalStep;
+    if (HasFailure()) {
+        RecordProperty("anchor_sweep", samples.str());
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    DynamicProjection,
+    AnchoredZoomContinuity,
+    testing::Values(AnchorZoomSweep{"GlobeAcross12UpPitch60", "globe", 11.5, 12.5, 60.0},
+                    AnchorZoomSweep{"GlobeAcross12DownPitch60", "globe", 12.5, 11.5, 60.0},
+                    AnchorZoomSweep{"GlobeBelow12UpPitch60", "globe", 11.125, 11.875, 60.0},
+                    AnchorZoomSweep{"GlobeBelow12DownPitch60", "globe", 11.875, 11.125, 60.0},
+                    AnchorZoomSweep{"GlobeAbove12UpPitch60", "globe", 12.125, 12.875, 60.0},
+                    AnchorZoomSweep{"GlobeAbove12DownPitch60", "globe", 12.875, 12.125, 60.0},
+                    AnchorZoomSweep{"GlobeAcross12UpPitch0", "globe", 11.5, 12.5, 0.0},
+                    AnchorZoomSweep{"GlobeAcross12DownPitch0", "globe", 12.5, 11.5, 0.0},
+                    AnchorZoomSweep{"GlobeAcross11UpPitch60", "globe", 10.875, 11.125, 60.0},
+                    AnchorZoomSweep{"GlobeAcross11DownPitch60", "globe", 11.125, 10.875, 60.0},
+                    AnchorZoomSweep{"GlobeAcrossInverseBranchUpPitch60", "globe", 11.0005, 11.0015, 60.0},
+                    AnchorZoomSweep{"GlobeAcrossInverseBranchDownPitch60", "globe", 11.0015, 11.0005, 60.0},
+                    AnchorZoomSweep{"MercatorAcross12UpPitch60", "mercator", 11.5, 12.5, 60.0},
+                    AnchorZoomSweep{"MercatorAcross12DownPitch60", "mercator", 12.5, 11.5, 60.0}),
+    [](const testing::TestParamInfo<AnchorZoomSweep>& info) { return info.param.name; });
+
 TEST(GlobeTransform, AnchoredZoomKeepsTheAnchorInPlace) {
     Transform transform;
     setUpGlobe(transform, {30.0, 15.0}, 3.0);
@@ -1559,6 +1664,72 @@ TEST(GlobeTransform, AnchoredZoomKeepsTheAnchorInPlace) {
     const ScreenCoordinate after = transform.latLngToScreenCoordinate(anchorLatLng);
     EXPECT_NEAR(anchor.x, after.x, 0.5);
     EXPECT_NEAR(anchor.y, after.y, 0.5);
+}
+
+TEST(GlobeTransform, MixedProjectionAnchoredZoomPreservesGroundLocation) {
+    style::Projection projection;
+    projection.setType(ProjectionDefinition("globe"));
+    Transform transform;
+    transform.resize({390, 844});
+    transform.setProjection(projection.impl);
+    transform.jumpTo(
+        CameraOptions().withCenter(LatLng{-33.92, 151.22}).withZoom(11.5).withBearing(33.0).withPitch(60.0));
+    transform.setGestureInProgress(true);
+    const ScreenCoordinate anchor{125.0, 300.0};
+    std::ostringstream samples;
+    samples << std::setprecision(17)
+            << "phase,zoom,transition,center_lat,center_lng,inverse_lat,inverse_lng,inverse_dx,inverse_dy,"
+               "tracked_dx,tracked_dy\n";
+    const auto record = [&](const char* phase, const Transform& camera, const LatLng& inverse, const LatLng& tracked) {
+        const auto inversePoint = camera.latLngToScreenCoordinate(inverse);
+        const auto trackedPoint = camera.latLngToScreenCoordinate(tracked);
+        const auto center = camera.getLatLng(LatLng::Unwrapped);
+        samples << phase << ',' << camera.getZoom() << ',' << camera.getState().getProjectionTransition() << ','
+                << center.latitude() << ',' << center.longitude() << ',' << inverse.latitude() << ','
+                << inverse.longitude() << ',' << inversePoint.x - anchor.x << ',' << inversePoint.y - anchor.y << ','
+                << trackedPoint.x - anchor.x << ',' << trackedPoint.y - anchor.y << '\n';
+        return std::hypot(inversePoint.x - anchor.x, inversePoint.y - anchor.y);
+    };
+    const auto original = transform.screenCoordinateToLatLng(anchor, LatLng::Unwrapped);
+    const double beforeError = record("before", transform, original, original);
+    Transform raw{transform.getState()};
+    raw.jumpTo(CameraOptions().withZoom(11.515625));
+    const auto rawInverse = raw.screenCoordinateToLatLng(anchor, LatLng::Unwrapped);
+    const double rawError = record("raw_zoom", raw, rawInverse, original);
+    transform.jumpTo(CameraOptions().withZoom(11.515625).withAnchor(anchor));
+    const auto afterInverse = transform.screenCoordinateToLatLng(anchor, LatLng::Unwrapped);
+    record("anchored", transform, afterInverse, original);
+    const auto afterPoint = transform.latLngToScreenCoordinate(original);
+    const double anchorError = std::hypot(afterPoint.x - anchor.x, afterPoint.y - anchor.y);
+    EXPECT_LE(beforeError, 1e-6);
+    EXPECT_LE(rawError, 1e-6);
+    EXPECT_LE(anchorError, 0.25) << samples.str();
+    if (HasFailure()) {
+        RecordProperty("single_step_samples", samples.str());
+    }
+}
+
+TEST(GlobeTransform, MixedProjectionBoundaryInverseKeepsTheSameWorldCopy) {
+    struct BoundaryCase {
+        double centerLongitude;
+        double bearing;
+        double screenX;
+        double expectedLongitude;
+    };
+    for (const auto& sample : {BoundaryCase{-175.0, -22.5, 600.0, 5.0}, BoundaryCase{175.0, 22.5, 200.0, -5.0}}) {
+        Transform transform;
+        transform.resize({800, 600});
+        transform.setProjectionDefinition(ProjectionDefinition("mercator", "vertical-perspective", 0.2));
+        transform.jumpTo(CameraOptions()
+                             .withCenter(LatLng{25.0, sample.centerLongitude})
+                             .withZoom(0.0)
+                             .withBearing(sample.bearing)
+                             .withPitch(30.0));
+        const ScreenCoordinate point{sample.screenX, 225.0};
+        const auto coordinate = transform.getState().screenCoordinateToLatLng(point, LatLng::Unwrapped);
+        SCOPED_TRACE(testing::Message() << "center_longitude=" << sample.centerLongitude);
+        EXPECT_NEAR(coordinate.longitude(), sample.expectedLongitude, 1e-6);
+    }
 }
 
 TEST(GlobeTransform, ZoomingOutAroundAnAnchorNearTheHorizonStaysContinuous) {

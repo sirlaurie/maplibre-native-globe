@@ -86,7 +86,7 @@ TEST(CrossTileSymbolLayerIndex, addBucket) {
                             {},
                             false /*iconsInText*/};
     mainBucket.bucketInstanceId = ++maxBucketInstanceId;
-    index.addBucket(mainID, mat4{}, mainBucket);
+    index.addBucket(mainID, ProjectionData{}, mainBucket);
 
     // Assigned new IDs
     ASSERT_EQ(mainBucket.symbolInstances.at(0).getCrossTileID(), 1u);
@@ -114,7 +114,7 @@ TEST(CrossTileSymbolLayerIndex, addBucket) {
                              {},
                              false /*iconsInText*/};
     childBucket.bucketInstanceId = ++maxBucketInstanceId;
-    index.addBucket(childID, mat4{}, childBucket);
+    index.addBucket(childID, ProjectionData{}, childBucket);
 
     // matched parent tile
     ASSERT_EQ(childBucket.symbolInstances.at(0).getCrossTileID(), 1u);
@@ -144,7 +144,7 @@ TEST(CrossTileSymbolLayerIndex, addBucket) {
                               {},
                               false /*iconsInText*/};
     parentBucket.bucketInstanceId = ++maxBucketInstanceId;
-    index.addBucket(parentID, mat4{}, parentBucket);
+    index.addBucket(parentID, ProjectionData{}, parentBucket);
 
     // matched child tile
     ASSERT_EQ(parentBucket.symbolInstances.at(0).getCrossTileID(), 1u);
@@ -174,7 +174,7 @@ TEST(CrossTileSymbolLayerIndex, addBucket) {
                                   {},
                                   false /*iconsInText*/};
     grandchildBucket.bucketInstanceId = ++maxBucketInstanceId;
-    index.addBucket(grandchildID, mat4{}, grandchildBucket);
+    index.addBucket(grandchildID, ProjectionData{}, grandchildBucket);
 
     // Matches the symbol in `mainBucket`
     ASSERT_EQ(grandchildBucket.symbolInstances.at(0).getCrossTileID(), 1u);
@@ -234,7 +234,7 @@ TEST(CrossTileSymbolLayerIndex, resetIDs) {
     childBucket.bucketInstanceId = ++maxBucketInstanceId;
 
     // assigns a new id
-    index.addBucket(mainID, mat4{}, mainBucket);
+    index.addBucket(mainID, ProjectionData{}, mainBucket);
     ASSERT_EQ(mainBucket.symbolInstances.at(0).getCrossTileID(), 1u);
 
     // removes the tile
@@ -242,11 +242,11 @@ TEST(CrossTileSymbolLayerIndex, resetIDs) {
     index.removeStaleBuckets(currentIDs);
 
     // assigns a new id
-    index.addBucket(childID, mat4{}, childBucket);
+    index.addBucket(childID, ProjectionData{}, childBucket);
     ASSERT_EQ(childBucket.symbolInstances.at(0).getCrossTileID(), 2u);
 
     // overwrites the old id to match the already-added tile
-    index.addBucket(mainID, mat4{}, mainBucket);
+    index.addBucket(mainID, ProjectionData{}, mainBucket);
     ASSERT_EQ(mainBucket.symbolInstances.at(0).getCrossTileID(), 2u);
 }
 
@@ -305,12 +305,12 @@ TEST(CrossTileSymbolLayerIndex, noDuplicatesWithinZoomLevel) {
     childBucket.bucketInstanceId = ++maxBucketInstanceId;
 
     // assigns new ids
-    index.addBucket(mainID, mat4{}, mainBucket);
+    index.addBucket(mainID, ProjectionData{}, mainBucket);
     ASSERT_EQ(mainBucket.symbolInstances.at(0).getCrossTileID(), 1u);
     ASSERT_EQ(mainBucket.symbolInstances.at(1).getCrossTileID(), 2u);
 
     // copies parent ids without duplicate ids in this tile
-    index.addBucket(childID, mat4{}, childBucket);
+    index.addBucket(childID, ProjectionData{}, childBucket);
     ASSERT_EQ(childBucket.symbolInstances.at(0).getCrossTileID(),
               1u); // A' copies from A
     ASSERT_EQ(childBucket.symbolInstances.at(1).getCrossTileID(),
@@ -373,12 +373,12 @@ TEST(CrossTileSymbolLayerIndex, bucketReplacement) {
     secondBucket.bucketInstanceId = ++maxBucketInstanceId;
 
     // assigns new ids
-    index.addBucket(tileID, mat4{}, firstBucket);
+    index.addBucket(tileID, ProjectionData{}, firstBucket);
     ASSERT_EQ(firstBucket.symbolInstances.at(0).getCrossTileID(), 1u);
     ASSERT_EQ(firstBucket.symbolInstances.at(1).getCrossTileID(), 2u);
 
     // copies parent ids without duplicate ids in this tile
-    index.addBucket(tileID, mat4{}, secondBucket);
+    index.addBucket(tileID, ProjectionData{}, secondBucket);
     ASSERT_EQ(secondBucket.symbolInstances.at(0).getCrossTileID(),
               1u); // A' copies from A
     ASSERT_EQ(secondBucket.symbolInstances.at(1).getCrossTileID(),
@@ -429,13 +429,13 @@ TEST(CrossTileSymbolLayerIndex, offscreenSymbols) {
                               false /*iconsInText*/};
     mat4 posMatrix;
     populatePosMatrix(posMatrix, tileId, 60.0, 25.0, 7.0);
-    index.addBucket(tileId, posMatrix, symbolBucket);
+    index.addBucket(tileId, ProjectionData{.mainMatrix = posMatrix}, symbolBucket);
 
     EXPECT_EQ(symbolBucket.symbolInstances.at(0).getCrossTileID(), SymbolInstance::invalidCrossTileID);
     EXPECT_EQ(symbolBucket.symbolInstances.at(1).getCrossTileID(), SymbolInstance::invalidCrossTileID);
 
     populatePosMatrix(posMatrix, tileId, 39.0, -76.0, 7.0);
-    index.addBucket(tileId, posMatrix, symbolBucket);
+    index.addBucket(tileId, ProjectionData{.mainMatrix = posMatrix}, symbolBucket);
 
     EXPECT_EQ(symbolBucket.symbolInstances.at(0).getCrossTileID(), 1u);
     EXPECT_EQ(symbolBucket.symbolInstances.at(1).getCrossTileID(), 2u);

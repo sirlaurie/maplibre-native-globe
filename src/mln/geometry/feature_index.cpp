@@ -124,7 +124,8 @@ FeatureIndex::FeatureIndex(std::unique_ptr<const GeometryTileData> tileData_)
 void FeatureIndex::insert(const GeometryCollection& geometries,
                           std::size_t index,
                           const std::string& sourceLayerName,
-                          const std::string& bucketLeaderID) {
+                          const std::string& bucketLeaderID,
+                          bool includeTileBuffer) {
     if (uniqueLayerIDs.empty()) {
         uniqueLayerIDs.reserve(expectedUniqueLayerIDs);
     }
@@ -137,9 +138,12 @@ void FeatureIndex::insert(const GeometryCollection& geometries,
 
     auto featureSortIndex = sortIndex++;
     for (const auto& ring : geometries) {
+        if (ring.empty()) {
+            continue;
+        }
         const auto envelope = mapbox::geometry::envelope(ring);
-        if (envelope.min.x < util::EXTENT && envelope.min.y < util::EXTENT && envelope.max.x >= 0 &&
-            envelope.max.y >= 0) {
+        if (includeTileBuffer || (envelope.min.x < util::EXTENT && envelope.min.y < util::EXTENT &&
+                                  envelope.max.x >= 0 && envelope.max.y >= 0)) {
             grid.insert(RefIndexedSubfeature(index, emplacedLayerName, emplacedLeaderID, featureSortIndex),
                         {convertPoint<float>(envelope.min), convertPoint<float>(envelope.max)});
         }
@@ -149,7 +153,7 @@ void FeatureIndex::insert(const GeometryCollection& geometries,
 void FeatureIndex::query(std::unordered_map<std::string, std::vector<Feature>>& result,
                          const GeometryCoordinates& queryGeometry,
                          const TransformState& transformState,
-                         const mat4& posMatrix,
+                         const FeatureQueryContext& queryContext,
                          const double tileSize,
                          const double scale,
                          const RenderedQueryOptions& queryOptions,
@@ -169,14 +173,24 @@ void FeatureIndex::query(std::unordered_map<std::string, std::vector<Feature>>& 
 
     // Query the grid index
     mapbox::geometry::box<int16_t> box = mapbox::geometry::envelope(queryGeometry);
-    std::vector<RefIndexedSubfeature> features = grid.query(
-        {convertPoint<float>(box.min - additionalPadding), convertPoint<float>(box.max + additionalPadding)});
+    const GridIndex<RefIndexedSubfeature>::BBox candidateBounds =
+        transformState.isGlobeRendering()
+            ? GridIndex<RefIndexedSubfeature>::BBox{{0, 0}, {util::EXTENT, util::EXTENT}}
+            : GridIndex<RefIndexedSubfeature>::BBox{convertPoint<float>(box.min - additionalPadding),
+                                                    convertPoint<float>(box.max + additionalPadding)};
+    auto features = grid.queryWithBoxes(candidateBounds);
+    if (!transformState.isGlobeRendering()) {
+        std::erase_if(features, [](const auto& feature) {
+            const auto& bounds = feature.second;
+            return bounds.min.x >= util::EXTENT || bounds.min.y >= util::EXTENT || bounds.max.x < 0 || bounds.max.y < 0;
+        });
+    }
 
-    std::ranges::sort(features, [](const RefIndexedSubfeature& a, const RefIndexedSubfeature& b) {
-        return a.getSortIndex() > b.getSortIndex();
-    });
+    std::ranges::sort(features,
+                      [](const auto& a, const auto& b) { return a.first.getSortIndex() > b.first.getSortIndex(); });
     size_t previousSortIndex = std::numeric_limits<size_t>::max();
-    for (const auto& indexedFeature : features) {
+    for (const auto& feature : features) {
+        const auto& indexedFeature = feature.first;
         // If this feature is the same as the previous feature, skip it.
         if (indexedFeature.getSortIndex() == previousSortIndex) continue;
         previousSortIndex = indexedFeature.getSortIndex();
@@ -190,7 +204,7 @@ void FeatureIndex::query(std::unordered_map<std::string, std::vector<Feature>>& 
                    queryGeometry,
                    transformState,
                    pixelsToTileUnits,
-                   posMatrix,
+                   &queryContext,
                    &sourceFeatureState);
     }
 }
@@ -233,7 +247,6 @@ std::unordered_map<std::string, std::vector<Feature>> FeatureIndex::lookupSymbol
     });
 
     for (const auto& symbolFeature : sortedFeatures) {
-        mat4 unusedMatrix;
         addFeature(result,
                    symbolFeature,
                    queryOptions,
@@ -243,7 +256,7 @@ std::unordered_map<std::string, std::vector<Feature>> FeatureIndex::lookupSymbol
                    GeometryCoordinates(),
                    {},
                    0,
-                   unusedMatrix,
+                   nullptr,
                    nullptr);
     }
     return result;
@@ -258,7 +271,7 @@ void FeatureIndex::addFeature(std::unordered_map<std::string, std::vector<Featur
                               const GeometryCoordinates& queryGeometry,
                               const TransformState& transformState,
                               const float pixelsToTileUnits,
-                              const mat4& posMatrix,
+                              const FeatureQueryContext* queryContext,
                               const SourceFeatureState* sourceFeatureState) const {
     // Lazily calculated.
     std::unique_ptr<GeometryTileLayer> sourceLayer;
@@ -289,9 +302,13 @@ void FeatureIndex::addFeature(std::unordered_map<std::string, std::vector<Featur
 
         bool needsCrossTileIndex = renderLayer->baseImpl->getTypeInfo()->crossTileIndex ==
                                    style::LayerTypeInfo::CrossTileIndex::Required;
-        if (!needsCrossTileIndex &&
-            !renderLayer->queryIntersectsFeature(
-                queryGeometry, *geometryTileFeature, tileID.z, transformState, pixelsToTileUnits, posMatrix, state)) {
+        if (!needsCrossTileIndex && !renderLayer->queryIntersectsFeature(queryGeometry,
+                                                                         *geometryTileFeature,
+                                                                         tileID.z,
+                                                                         transformState,
+                                                                         pixelsToTileUnits,
+                                                                         *queryContext,
+                                                                         state)) {
             continue;
         }
 
